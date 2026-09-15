@@ -91,12 +91,23 @@ export async function fetchSerp(params: {
     );
   }
 
-  const raw = await resp.json();
+  let raw: unknown;
+  try {
+    raw = await resp.json();
+  } catch {
+    // A response that returned resp.ok but fails to parse as JSON almost
+    // always means the connection was cut mid-response — usually the
+    // platform's own execution timeout killing the request, not Bright
+    // Data itself. Surface that plainly instead of the raw parse error.
+    throw new BrightDataError(
+      "Bright Data's response was empty or cut off — this usually means the request timed out. Try a lower check depth in Settings."
+    );
+  }
   // Bright Data has been observed returning either a plain object with an
   // `organic` array, or that same object wrapped in a single-element array
   // — handle both rather than assuming one shape.
-  const data = Array.isArray(raw) ? raw[0] : raw;
-  return { organic: data?.organic ?? [] };
+  const data = Array.isArray(raw) ? raw[0] : (raw as { organic?: unknown[] } | null);
+  return { organic: (data?.organic as OrganicResult[]) ?? [] };
 }
 
 /**
