@@ -54,7 +54,9 @@ export default function AddKeywordForm({
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "auto";
-    el.style.height = `${Math.max(el.scrollHeight, 128)}px`;
+    // Capped: grows with content up to a point, then scrolls internally
+    // instead of pushing the rest of the dialog off-screen.
+    el.style.height = `${Math.min(Math.max(el.scrollHeight, 128), 220)}px`;
   }
 
   async function submit(e: React.FormEvent) {
@@ -144,7 +146,7 @@ export default function AddKeywordForm({
           }}
           placeholder={"dog joint supplements\n\nPaste a column from Excel/Sheets, or comma-separate on one line — each becomes its own keyword."}
           rows={5}
-          className={`resize-y leading-relaxed ${inputClasses}`}
+          className={`resize-y leading-relaxed overflow-y-auto ${inputClasses}`}
         />
       </div>
 

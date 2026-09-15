@@ -17,16 +17,16 @@ export default function Modal({
       onClick={onClose}
     >
       <div
-        className={`${width} max-w-full rounded-md border border-line bg-surface shadow-lg p-4 md:p-5`}
+        className={`${width} max-w-full max-h-[85vh] flex flex-col rounded-md border border-line bg-surface shadow-lg p-4 md:p-5`}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-4 shrink-0">
           <h2 className="text-sm font-semibold text-ink">{title}</h2>
           <button onClick={onClose} className="text-xs text-muted hover:text-ink">
             Close
           </button>
         </div>
-        {children}
+        <div className="overflow-y-auto">{children}</div>
       </div>
     </div>
   );
