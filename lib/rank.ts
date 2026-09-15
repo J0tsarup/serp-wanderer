@@ -85,7 +85,22 @@ export async function checkKeyword(keywordId: string): Promise<CheckOutcome> {
       url: result?.url ?? null,
     };
   } catch (err) {
-    const message = err instanceof BrightDataError ? err.message : "Unknown error";
+    // Always log the real error server-side — a bare "Unknown error" client
+    // message with nothing in Vercel's logs made this genuinely undebuggable
+    // before. A request that got killed by the platform's own execution
+    // timeout (rather than thrown inside our own code) surfaces here as an
+    // AbortError, which is real and worth surfacing distinctly.
+    console.error(`checkKeyword failed for "${keyword.term}" (${keyword.id}):`, err);
+
+    let message = "Unknown error";
+    if (err instanceof BrightDataError) {
+      message = err.message;
+    } else if (err instanceof Error) {
+      message =
+        err.name === "AbortError" || err.name === "TimeoutError"
+          ? "Timed out waiting on Bright Data — try a lower check depth in Settings if this keeps happening."
+          : err.message;
+    }
     return { keywordId: keyword.id, term: keyword.term, position: null, url: null, error: message };
   }
 }

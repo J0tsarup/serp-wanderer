@@ -99,7 +99,7 @@ model Settings {
   defaultCountry   String   @default("us")
   defaultLanguage  String   @default("en")
   defaultLocation  String?  // optional default city (US only for now) — same canonical-name format as Keyword.location
-  maxCheckDepth    Int      @default(100) // how many Google result positions to check (10, 30, 50, or 100)
+  maxCheckDepth    Int      @default(30) // how many Google result positions to check (10, 30, 50, or 100) — 30 by default to avoid timeouts on Vercel's free plan; raise it in Settings if you're on Pro or don't mind the risk
   resendApiKey     String?  // for the weekly Search Console email digest
   digestEmail      String?  // recipient address for the digest
   digestEnabled    Boolean  @default(false)
