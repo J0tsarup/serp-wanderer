@@ -101,6 +101,14 @@ export async function checkKeyword(keywordId: string): Promise<CheckOutcome> {
           ? "Timed out waiting on Bright Data — try a lower check depth in Settings if this keeps happening."
           : err.message;
     }
+
+    // Record the attempt even though it failed, so "Last checked" reflects
+    // reality — a keyword that's been tried and failed five times in a row
+    // looked identical to one that had never been checked at all otherwise.
+    await prisma.rankCheck
+      .create({ data: { keywordId: keyword.id, position: null, url: null } })
+      .catch((dbErr) => console.error(`Failed to record failed-check attempt for ${keyword.id}:`, dbErr));
+
     return { keywordId: keyword.id, term: keyword.term, position: null, url: null, error: message };
   }
 }

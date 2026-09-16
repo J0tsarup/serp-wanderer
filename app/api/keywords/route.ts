@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
 
 // A deep check (checking further than the top 10) pages through multiple
 // Bright Data requests, which can take longer than the default timeout.
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   const user = await getSessionUser();

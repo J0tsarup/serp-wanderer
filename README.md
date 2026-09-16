@@ -36,18 +36,26 @@ manual data migration needed beyond running the SQL migration below.
 - The app compares each result's hostname against your tracked domain. If
   your domain isn't found on the first page, it pages through further
   requests (`start=10`, `20`, ...) up to the **check depth** configured on
-  the Settings page (10 / 30 / 50 / 100 — 100 by default), stopping the
+  the Settings page (10 / 30 / 50 / 100 — **10 by default**), stopping the
   moment a match is found. A keyword ranking #3 only ever costs one Bright
   Data request; a keyword that isn't ranking at all costs one request per
   page of depth configured (worst case, 10 requests at the 100 setting).
 - Every check is stored as a row in `RankCheck`, so the dashboard can show a
-  history/trend per keyword, not just the latest number.
+  history/trend per keyword, not just the latest number. This includes
+  failed checks (Bright Data errors, timeouts) — a null-position row is still
+  recorded so "Last checked" reflects reality, rather than a failed attempt
+  looking identical to "never checked."
 
 **Cost and time tradeoff:** checking deeper means more Bright Data requests
 per keyword for anything that isn't already ranking well, which uses more
-credits and takes longer. If you're tracking a lot of keywords or want to
-conserve credits, drop the check depth to 10 or 30 on the Settings page —
-you can change it any time, it just affects checks going forward.
+credits and takes longer. **If you're on Vercel's free Hobby plan, there's a
+hard ~10 second execution limit per check that Vercel itself enforces — not
+something this app can override.** At depth 10 (one request), a check
+comfortably fits under that. Anything deeper adds real risk of occasionally
+timing out, especially under any added latency (a cold Neon database, a
+slower-than-usual Bright Data response) — intermittent failures at depth 30+
+on Hobby are expected, not a bug. Vercel Pro removes the ceiling entirely
+(the routes already request up to 300s via `maxDuration`, which Pro honors).
 
 **Bulk add & tags:** type multiple keywords separated by commas, or paste a
 column copied from Excel/Sheets (each line becomes a separate keyword) —

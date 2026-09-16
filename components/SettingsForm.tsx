@@ -172,7 +172,10 @@ export default function SettingsForm({
         <p className={helpClasses}>
           How far into Google's results to look for your domain. Stops early the moment it's
           found — the "up to" figure is only the worst case, when a keyword isn't ranking at all.
-          Deeper checking uses more Bright Data credits per keyword.
+          Deeper checking uses more Bright Data credits per keyword, and each extra request adds
+          time. If you're on Vercel's free Hobby plan (a hard ~10s limit per check), depths above
+          10 risk occasionally timing out — that's a platform limit, not something this app
+          controls. Vercel Pro removes that ceiling.
         </p>
       </div>
 
