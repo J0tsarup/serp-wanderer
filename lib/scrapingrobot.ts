@@ -53,39 +53,88 @@ export async function fetchSerpScrapingRobot(params: {
     );
   }
 
-  const resp = await fetch(`${ENDPOINT}?token=${encodeURIComponent(params.token)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      url: buildGoogleUrl(params),
-      module: params.render ? "HtmlChromeScraper" : "HtmlRequestScraper",
-    }),
-    signal: AbortSignal.timeout(params.render ? 60_000 : 30_000),
-  });
+  // Scraping Robot rotates proxies per request and only charges for
+  // successful results, so a blocked or timed-out attempt is retried on a
+  // fresh proxy at no extra cost. Browser rendering is slow, so fewer tries.
+  const maxAttempts = params.render ? 2 : 3;
+  let lastError: SerpProviderError | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return { items: await fetchOnce(params.token, params.render, buildGoogleUrl(params)) };
+    } catch (err) {
+      if (!(err instanceof SerpProviderError) || !err.retryable) throw err;
+      lastError = err;
+      console.warn(`Scraping Robot attempt ${attempt}/${maxAttempts} failed: ${err.message}`);
+      if (attempt < maxAttempts) await new Promise((r) => setTimeout(r, 1500 * attempt));
+    }
+  }
+  throw new SerpProviderError(`${lastError!.message} (tried ${maxAttempts} times)`, lastError!.status);
+}
+
+/** Retryable = worth another attempt on a fresh proxy (block, overload, timeout). */
+class RetryableError extends SerpProviderError {
+  retryable = true;
+}
+
+async function fetchOnce(token: string, render: boolean, googleUrl: string): Promise<SerpItem[]> {
+  let resp: Response;
+  try {
+    resp = await fetch(`${ENDPOINT}?token=${encodeURIComponent(token)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: googleUrl, module: render ? "HtmlChromeScraper" : "HtmlRequestScraper" }),
+      signal: AbortSignal.timeout(render ? 90_000 : 30_000),
+    });
+  } catch (err) {
+    if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
+      throw new RetryableError("Scraping Robot didn't answer in time");
+    }
+    throw err;
+  }
 
   const text = await resp.text().catch(() => "");
 
   if (!resp.ok) {
+    if (resp.status === 401) {
+      throw new SerpProviderError("Scraping Robot request failed (401): token is wrong or the account is out of credits", 401);
+    }
     const reason =
-      resp.status === 401
-        ? "token is wrong or the account is out of credits"
-        : resp.status === 429
-        ? "Scraping Robot is overloaded — try again shortly"
+      resp.status === 429
+        ? "Scraping Robot is overloaded"
         : resp.status === 500
-        ? "Scraping Robot timed out or hit an internal error"
+        ? "Scraping Robot timed out loading Google or hit an internal error"
         : text.slice(0, 200);
-    throw new SerpProviderError(`Scraping Robot request failed (${resp.status}): ${reason}`, resp.status);
+    const Err = resp.status === 429 || resp.status >= 500 ? RetryableError : SerpProviderError;
+    throw new Err(`Scraping Robot request failed (${resp.status}): ${reason}`, resp.status);
   }
 
   const html = extractHtml(text);
-  if (!html) {
-    throw new SerpProviderError("Scraping Robot returned an empty page.");
+  if (!html) throw new RetryableError("Scraping Robot returned an empty page");
+
+  const page = classifyGooglePage(html);
+  if (page !== "ok") {
+    // Logged so the real page can be inspected in Vercel's logs.
+    console.warn(`Google returned a "${page}" page via Scraping Robot:`, html.replace(/\s+/g, " ").slice(0, 400));
   }
-  if (/\/sorry\/|unusual traffic|detected unusual/i.test(html)) {
-    throw new SerpProviderError("Google showed a CAPTCHA / block page for this request — try again, or enable JS rendering.");
+  if (page === "captcha") {
+    throw new RetryableError("Google showed a CAPTCHA (unusual-traffic page) to Scraping Robot's proxy");
+  }
+  if (page === "needs-js") {
+    // Deterministic, so not retried: Google won't serve results without JS.
+    throw new SerpProviderError(
+      "Google requires JavaScript for this search — turn on \"Render JavaScript\" for Scraping Robot in Settings."
+    );
   }
 
-  return { items: parseGoogleHtml(html) };
+  return parseGoogleHtml(html);
+}
+
+/** What kind of page Google actually returned. */
+function classifyGooglePage(html: string): "ok" | "captcha" | "needs-js" {
+  if (/\/sorry\/index|unusual traffic from your computer|id="captcha-form"|g-recaptcha/i.test(html)) return "captcha";
+  if (/enablejs|emsg=SG_REL|httpservice\/retry/i.test(html) && !/<h3/i.test(html)) return "needs-js";
+  return "ok";
 }
 
 /** Response is either raw HTML or JSON wrapping it (`{ status, result, ... }`) — accept both. */
