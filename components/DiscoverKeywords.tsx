@@ -6,7 +6,17 @@ import { Spinner } from "./Spinner";
 
 type Candidate = { query: string; clicks: number; impressions: number; ctr: number; position: number };
 
-export default function DiscoverKeywords({ domainId }: { domainId: string }) {
+export default function DiscoverKeywords({
+  domainId,
+  defaultCountry,
+  defaultLanguage,
+  defaultLocation,
+}: {
+  domainId: string;
+  defaultCountry: string;
+  defaultLanguage: string;
+  defaultLocation: string;
+}) {
   const [open, setOpen] = useState(false);
   const [candidates, setCandidates] = useState<Candidate[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -32,12 +42,27 @@ export default function DiscoverKeywords({ domainId }: { domainId: string }) {
 
   async function addKeyword(query: string) {
     setAddingQuery(query);
-    await fetch("/api/keywords", {
+    setError(null);
+    // Same defaults the "Add keyword" dialog prefills from Settings — without
+    // these the API would fall back to US / desktop / no city.
+    const res = await fetch("/api/keywords", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ domainId, term: query }),
+      body: JSON.stringify({
+        domainId,
+        term: query,
+        country: defaultCountry,
+        language: defaultLanguage,
+        location: defaultCountry === "us" ? defaultLocation : "",
+        device: "desktop",
+      }),
     }).catch(() => null);
     setAddingQuery(null);
+    if (!res?.ok) {
+      const body = await res?.json().catch(() => null);
+      setError(`Couldn't add "${query}": ${body?.error ?? "request failed"}`);
+      return;
+    }
     setAddedQueries((prev) => new Set(prev).add(query));
     router.refresh();
   }

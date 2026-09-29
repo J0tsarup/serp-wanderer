@@ -1,17 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { checkKeyword } from "@/lib/rank";
+import { checkStaleKeywords } from "@/lib/rank";
 import { getSessionUser } from "@/lib/auth";
 
-// Never statically prerendered — this route always reads/writes live
-// database state, and some deployments run before the schema migration
-// that adds newer columns has been applied, which would otherwise break
-// the production build.
+// Never statically prerendered — always reads/writes live database state.
 export const dynamic = "force-dynamic";
-
 export const maxDuration = 300;
 
-export async function POST(_req: NextRequest, { params }: { params: { id: string } }) {
+// Each call does one short batch and reports how many are left; the
+// "Refresh now" button keeps calling until nothing remains. Short batches keep
+// every request well inside platform limits and let the UI show progress.
+const BATCH_BUDGET_MS = 45_000;
+
+export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
@@ -20,16 +21,23 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
     return NextResponse.json({ error: "Domain not found" }, { status: 404 });
   }
 
-  const keywords = await prisma.keyword.findMany({
-    where: { domainId: params.id },
-    select: { id: true },
+  // `since` = when the user clicked Refresh. Anything checked after that is
+  // already done in this refresh, so repeated calls never re-check a keyword.
+  const body = await req.json().catch(() => null);
+  const since = Number(body?.since) || Date.now();
+  const freshForMs = Math.max(0, Date.now() - since);
+
+  const { outcomes, remaining } = await checkStaleKeywords({
+    budgetMs: BATCH_BUDGET_MS,
+    freshForMs,
+    userId: user.id,
+    domainId: domain.id,
   });
 
-  const outcomes = [];
-  for (const { id } of keywords) {
-    outcomes.push(await checkKeyword(id));
-    await new Promise((r) => setTimeout(r, 200));
-  }
-
-  return NextResponse.json({ checked: outcomes.length, outcomes });
+  return NextResponse.json({
+    checked: outcomes.length,
+    failed: outcomes.filter((o) => o.error).length,
+    remaining,
+    outcomes,
+  });
 }

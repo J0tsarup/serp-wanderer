@@ -2,7 +2,12 @@ import { prisma } from "./db";
 
 const VALID_DEPTHS = [10, 30, 50, 100];
 
+import type { SerpProvider } from "./serp";
+
 export type ResolvedSettings = {
+  serpProvider: SerpProvider;
+  scrapingRobotToken: string | null;
+  scrapingRobotRender: boolean;
   brightdataApiKey: string | null;
   brightdataZone: string | null;
   defaultCountry: string;
@@ -25,6 +30,9 @@ export async function getSettings(userId: string): Promise<ResolvedSettings> {
   const row = await prisma.settings.findUnique({ where: { userId } });
 
   return {
+    serpProvider: row?.serpProvider === "scrapingrobot" ? "scrapingrobot" : "brightdata",
+    scrapingRobotToken: row?.scrapingRobotToken || process.env.SCRAPINGROBOT_TOKEN || null,
+    scrapingRobotRender: row?.scrapingRobotRender ?? false,
     brightdataApiKey: row?.brightdataApiKey || process.env.BRIGHTDATA_API_KEY || null,
     brightdataZone: row?.brightdataZone || process.env.BRIGHTDATA_SERP_ZONE || null,
     defaultCountry: row?.defaultCountry || "us",
@@ -45,6 +53,9 @@ export async function getSettings(userId: string): Promise<ResolvedSettings> {
 export async function updateSettings(
   userId: string,
   input: {
+    serpProvider?: string;
+    scrapingRobotToken?: string;
+    scrapingRobotRender?: boolean;
     brightdataApiKey?: string;
     brightdataZone?: string;
     defaultCountry?: string;
@@ -57,12 +68,17 @@ export async function updateSettings(
   }
 ) {
   const existing = await prisma.settings.findUnique({ where: { userId } });
+  const provider =
+    input.serpProvider === "scrapingrobot" || input.serpProvider === "brightdata" ? input.serpProvider : undefined;
   const depth = input.maxCheckDepth && VALID_DEPTHS.includes(input.maxCheckDepth) ? input.maxCheckDepth : undefined;
 
   return prisma.settings.upsert({
     where: { userId },
     create: {
       userId,
+      serpProvider: provider ?? "brightdata",
+      scrapingRobotToken: input.scrapingRobotToken || null,
+      scrapingRobotRender: input.scrapingRobotRender ?? false,
       brightdataApiKey: input.brightdataApiKey || null,
       brightdataZone: input.brightdataZone || null,
       defaultCountry: input.defaultCountry || "us",
@@ -74,6 +90,9 @@ export async function updateSettings(
       digestEnabled: input.digestEnabled ?? false,
     },
     update: {
+      serpProvider: provider ?? existing?.serpProvider ?? "brightdata",
+      scrapingRobotToken: input.scrapingRobotToken ? input.scrapingRobotToken : existing?.scrapingRobotToken,
+      scrapingRobotRender: input.scrapingRobotRender ?? existing?.scrapingRobotRender ?? false,
       brightdataApiKey: input.brightdataApiKey ? input.brightdataApiKey : existing?.brightdataApiKey,
       brightdataZone: input.brightdataZone ? input.brightdataZone : existing?.brightdataZone,
       defaultCountry: input.defaultCountry || existing?.defaultCountry || "us",

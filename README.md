@@ -1,10 +1,10 @@
 # SERP Wanderer
 
 A small, self-hosted keyword rank tracker: add domains, add keywords per domain,
-and it checks Google positions via **Bright Data's SERP API** on a daily
-schedule (or on demand). Positions are stored over time so you get a trend
-line per keyword — a lightweight SerpBear-style dashboard, purpose-built
-around Bright Data instead of SerpBear's other scraper integrations.
+and it checks Google positions on a schedule (or on demand) using either
+**Bright Data's SERP API** or **Scraping Robot** — pick one in Settings.
+Positions are stored over time so you get a trend line per keyword — a
+lightweight SerpBear-style dashboard.
 
 ## Layout
 
@@ -13,15 +13,33 @@ navigating back to a domain list page — pick a domain once and it stays
 selected while you work. Adding a keyword is a button that opens a small
 dialog instead of a permanent form bar. The keyword table becomes stacked
 cards below the `md` breakpoint instead of a horizontally-scrolling grid.
-Settings is tabbed (Bright Data / Search Console / Email digest) instead of
+Settings is tabbed (Rank checks / Search Console / Email digest) instead of
 one long scrolling page.
 
 ## Accounts
 
 The app is multi-user: each account has its own domains, keywords, and
-Bright Data credentials — nobody sees anyone else's data. Sign up with a
-username and password at `/signup` (no email verification — this is meant
-for a small team or personal use, not public signups). Log in at `/login`.
+provider credentials — nobody sees anyone else's data. Sign up at `/signup`
+with a username, password, and the **invite code** set in the
+`SIGNUP_INVITE_CODE` environment variable (keep the code in Vercel's env vars,
+not in the repo). If that variable isn't set, only the very first account can
+sign up and signups close after that. Log in at `/login`.
+
+**Upgrading to 3.3:** adds the Scraping Robot provider and a Search Console
+property per domain. Run `npm run db:push`, or paste this into Neon's SQL
+editor **before** deploying (it's additive, so the old version keeps working
+while it's in place; the first line is the 3.2 change, harmless if already
+applied):
+
+```sql
+ALTER TABLE "RankCheck" ADD COLUMN IF NOT EXISTS "error" TEXT;
+ALTER TABLE "Settings" ADD COLUMN IF NOT EXISTS "serpProvider" TEXT NOT NULL DEFAULT 'brightdata';
+ALTER TABLE "Settings" ADD COLUMN IF NOT EXISTS "scrapingRobotToken" TEXT;
+ALTER TABLE "Settings" ADD COLUMN IF NOT EXISTS "scrapingRobotRender" BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE "Domain" ADD COLUMN IF NOT EXISTS "gscSiteUrl" TEXT;
+```
+
+Then set `SIGNUP_INVITE_CODE` in Vercel → Settings → Environment Variables.
 
 **Upgrading an existing deployment:** if you were already running this
 before accounts existed, the very first account you sign up automatically
@@ -30,32 +48,47 @@ manual data migration needed beyond running the SQL migration below.
 
 ## How it works
 
-- Each keyword check calls Bright Data's SERP API (`data_format: parsed_light`),
-  which returns ~10 Google organic results per request as clean JSON — no
-  HTML parsing.
-- The app compares each result's hostname against your tracked domain. If
-  your domain isn't found on the first page, it pages through further
-  requests (`start=10`, `20`, ...) up to the **check depth** configured on
-  the Settings page (10 / 30 / 50 / 100 — **10 by default**), stopping the
-  moment a match is found. A keyword ranking #3 only ever costs one Bright
-  Data request; a keyword that isn't ranking at all costs one request per
-  page of depth configured (worst case, 10 requests at the 100 setting).
-- Every check is stored as a row in `RankCheck`, so the dashboard can show a
-  history/trend per keyword, not just the latest number. This includes
-  failed checks (Bright Data errors, timeouts) — a null-position row is still
-  recorded so "Last checked" reflects reality, rather than a failed attempt
-  looking identical to "never checked."
+- Each keyword check fetches one page (≈10 organic results) of Google
+  results from the provider chosen in Settings:
+  - **Bright Data** (`data_format: parsed_light`) returns results as JSON with
+    real links.
+  - **Scraping Robot** returns the raw Google page, which the app parses
+    (`lib/scrapingrobot.ts`). Desktop only — its API has no way to request
+    Google's mobile results, so mobile keywords report a clear error there.
+    City targeting is sent as Google's encoded `uule`.
+- **Finding your site in the results — same for every provider**
+  (`lib/serp/resolve.ts`): real links are used directly; old-style Google
+  redirects (`/url?q=…`) are decoded; Google's newer signed-out redirects
+  (`/goto?url=<opaque token>`) contain no readable address, so the site is
+  identified from the address Google prints under each result
+  (`hardypaw.com › products`). Only the result that matches your domain then
+  has its real URL looked up — one extra request, not one per result — and
+  if Google won't answer that, the ranking URL is rebuilt from the printed
+  address.
+- If your domain isn't on the first page, it pages through further requests
+  (`start=10`, `20`, …) up to the **check depth** in Settings (10 / 30 / 50 /
+  100 — **10 by default**), stopping the moment a match is found. Positions
+  on later pages count the organic results actually returned, not an assumed
+  10 per page. Bright Data's organic `rank` is used, not `global_rank`
+  (which counts ads and other SERP features too).
+- Every check is stored in `RankCheck`, including failed ones — those carry
+  an `error`, so the table shows "Check failed" instead of "not ranking."
 
-**Cost and time tradeoff:** checking deeper means more Bright Data requests
-per keyword for anything that isn't already ranking well, which uses more
-credits and takes longer. **If you're on Vercel's free Hobby plan, there's a
-hard ~10 second execution limit per check that Vercel itself enforces — not
-something this app can override.** At depth 10 (one request), a check
-comfortably fits under that. Anything deeper adds real risk of occasionally
-timing out, especially under any added latency (a cold Neon database, a
-slower-than-usual Bright Data response) — intermittent failures at depth 30+
-on Hobby are expected, not a bug. Vercel Pro removes the ceiling entirely
-(the routes already request up to 300s via `maxDuration`, which Pro honors).
+**Refreshes run in batches.** Vercel functions can now run up to 300s on
+every plan including Hobby (with Fluid compute, on by default), but a big
+keyword list still wouldn't fit in one run. So:
+
+- The scheduled refresh checks the keywords that have gone longest without a
+  check, stops with time to spare, and leaves the rest for the next run.
+  `vercel.json` schedules it four times a day (Hobby allows each cron entry
+  once a day, so it's four entries); keywords checked in the last 20 hours
+  are skipped, so nothing is checked or paid for twice. Roughly 80–100
+  keywords fit per run at depth 10.
+- "Refresh now" checks a domain in short batches and shows how many are
+  left; selecting keywords → Check does the same in groups of five.
+
+**Cost:** deeper checks mean more provider requests for keywords that aren't
+already ranking well, so more credits and time per keyword.
 
 **Bulk add & tags:** type multiple keywords separated by commas, or paste a
 column copied from Excel/Sheets (each line becomes a separate keyword) —
@@ -118,10 +151,10 @@ tab stays open, not just on page load.
    - `DATABASE_URL` — your Postgres connection string
    - `CRON_SECRET` — any long random string (e.g. `openssl rand -base64 32`)
 
-   Your Bright Data API key, zone name, and default search location are
+   Your provider credentials (Bright Data key + zone, or Scraping Robot token) and default search location are
    entered through the app itself (Settings page) once it's running — not
    env vars. The commented-out env vars in `.env.example` are only there as
-   an optional fallback if you'd rather configure those two via env/CI
+   an optional fallback if you'd rather configure those via env/CI
    instead of the UI.
 
 4. **Push the schema to your database**
@@ -133,8 +166,8 @@ tab stays open, not just on page load.
    ```bash
    npm run dev
    ```
-   Open http://localhost:3000 — you'll see a banner prompting you to add
-   your Bright Data API key and zone on the **Settings** page first. Once
+   Open http://localhost:3000 — you'll see a banner prompting you to pick a
+   provider and add its credentials on the **Settings** page first. Once
    that's saved, add a domain, add a keyword, and it checks immediately so
    you'll see a result right away.
 
@@ -144,16 +177,11 @@ tab stays open, not just on page load.
 
 1. Push this repo to GitHub, then import it in Vercel.
 2. Add the same environment variables from `.env` in Vercel's project settings.
-3. `vercel.json` already defines a daily cron (`0 6 * * *` — 6am UTC) hitting
-   `/api/cron/refresh`. Vercel automatically sends your `CRON_SECRET` as the
-   `Authorization` header on that scheduled call — no extra config needed.
-4. **Free (Hobby) plan caveat:** Hobby functions time out at 10 seconds
-   regardless of `maxDuration`. With the default 100-position check depth, a
-   *single* keyword check that isn't ranking at all can take longer than
-   that on its own — not just the scheduled bulk refresh. If you're on
-   Hobby, either drop the check depth to 10 or 30 on the Settings page, or
-   upgrade to Pro (which honors the `maxDuration` values already set in the
-   routes, up to 300s).
+3. `vercel.json` already schedules `/api/cron/refresh` four times a day
+   (02:00, 08:00, 14:00, 20:00 UTC — same path, four entries; Hobby may run each up to an hour late) and
+   the weekly digest. Vercel automatically sends your `CRON_SECRET` as the
+   `Authorization` header on those calls — no extra config needed.
+4. Add `SIGNUP_INVITE_CODE` to the environment variables.
 
 ### Option B — Render
 
@@ -165,15 +193,15 @@ tab stays open, not just on page load.
    ```bash
    curl "https://your-app.onrender.com/api/cron/refresh?secret=$CRON_SECRET"
    ```
-   Render's cron jobs aren't limited to 10 seconds the way Vercel Hobby is,
-   so this is the more comfortable option for a larger keyword list.
+   Run it as often as you like (e.g. hourly) — each run only checks keywords
+   that are due, so extra runs cost nothing.
 
 Either way, you can also just click **"Refresh now"** on a domain's page any
 time — it doesn't wait for the schedule.
 
 ## Search Console
 
-Separate from Bright Data rank checks — this pulls clicks, impressions, CTR,
+Separate from rank checks — this pulls clicks, impressions, CTR,
 and average position directly from Google, including Discover performance
 (traffic from Google's Discover feed, not regular search).
 
@@ -193,6 +221,14 @@ and average position directly from Google, including Discover performance
 - **Weekly email digest** — top queries from the last 7 days, sent every
   Monday, if you set it up (needs a [Resend](https://resend.com) API key —
   free tier is enough for this).
+
+**Property per domain:** each domain's page shows which Search Console
+property feeds it, with a "change" link to pick one. If none is picked, the
+account's property (chosen in Settings) is used only when it covers that
+domain — a `sc-domain:hardypaw.com` property covers hardypaw.com and its
+subdomains; a URL-prefix property like `https://www.hardypaw.com/` matches
+on hostname. Other domains show no Search Console columns rather than
+another site's numbers. Query data is cached for an hour per property.
 
 Each account connects its own Google Search Console using its own Google
 Cloud OAuth client — same "bring your own credentials" pattern as Bright
@@ -215,7 +251,7 @@ Data, entered on the Settings page.
 
 **Discover/News data limitation (from Google, not this app):** Google's API doesn't support grouping Discover or News data by search query — only by page, date, country, or device. The insights page switches away from "By query" automatically when you pick Discover or News, since Google's API rejects that combination outright.
 
-**Weekly digest setup:** sign up at resend.com (free), grab an API key, paste it into Settings along with the recipient email, and check "Send me a weekly digest." It sends via Resend's shared sandbox address by default — no domain verification needed to get started. Runs every Monday at 13:00 UTC via a second Vercel Cron entry already in `vercel.json`.
+**Weekly digest setup:** sign up at resend.com (free), grab an API key, paste it into Settings along with the recipient email, and check "Send me a weekly digest." It sends via Resend's shared sandbox address by default — no domain verification needed to get started. Runs every Monday at 13:00 UTC via its own Vercel Cron entry already in `vercel.json`.
 
 ## Google Ads (keyword volume, keyword ideas)
 
@@ -238,6 +274,6 @@ queries, and monthly search volume shown alongside tracked keywords.
   you want to add an `engine` field per keyword later.
 - **Email alerts on position changes:** not built in yet — `lib/rank.ts` is
   the natural place to add a comparison + notification step after each check.
-- **Auth:** this MVP has no login — it assumes a private deployment. Add
-  Vercel/Render access controls or a simple password gate if you're exposing
-  it publicly.
+- **Another SERP provider:** add a client that returns `SerpItem[]` (see
+  `lib/serp/resolve.ts`) and a branch in `lib/serp/index.ts` — ranking and
+  link handling are shared, so that's all it needs.

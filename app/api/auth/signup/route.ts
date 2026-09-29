@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import crypto from "crypto";
 import { hashPassword, createSession } from "@/lib/auth";
+
+function codesMatch(given: string, expected: string): boolean {
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 
 export const dynamic = "force-dynamic";
 
@@ -8,6 +15,19 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
   const username = (body?.username as string | undefined)?.trim().toLowerCase();
   const password = body?.password as string | undefined;
+  const inviteCode = ((body?.inviteCode as string | undefined) ?? "").trim();
+
+  // Signup is invite-only. SIGNUP_INVITE_CODE is set in the deployment's
+  // environment (kept out of the repo). If it isn't set, only the very first
+  // account can be created — so a forgotten env var never reopens signup.
+  const expectedCode = process.env.SIGNUP_INVITE_CODE?.trim();
+  if (expectedCode) {
+    if (!codesMatch(inviteCode, expectedCode)) {
+      return NextResponse.json({ error: "That invite code isn't valid" }, { status: 403 });
+    }
+  } else if ((await prisma.user.count()) > 0) {
+    return NextResponse.json({ error: "Signups are closed on this deployment" }, { status: 403 });
+  }
 
   if (!username || !password) {
     return NextResponse.json({ error: "Username and password are required" }, { status: 400 });

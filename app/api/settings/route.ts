@@ -14,6 +14,9 @@ export async function GET() {
 
   const settings = await getSettings(user.id);
   return NextResponse.json({
+    serpProvider: settings.serpProvider,
+    scrapingRobotTokenMasked: maskSecret(settings.scrapingRobotToken),
+    scrapingRobotRender: settings.scrapingRobotRender,
     brightdataApiKeyMasked: maskSecret(settings.brightdataApiKey),
     brightdataZone: settings.brightdataZone, // zone names aren't secret, safe to show in full
     defaultCountry: settings.defaultCountry,
@@ -36,6 +39,9 @@ export async function POST(req: NextRequest) {
   }
 
   await updateSettings(user.id, {
+    serpProvider: body.serpProvider as string | undefined,
+    scrapingRobotToken: (body.scrapingRobotToken as string | undefined)?.trim(),
+    scrapingRobotRender: typeof body.scrapingRobotRender === "boolean" ? body.scrapingRobotRender : undefined,
     brightdataApiKey: (body.brightdataApiKey as string | undefined)?.trim(),
     brightdataZone: (body.brightdataZone as string | undefined)?.trim(),
     defaultCountry: (body.defaultCountry as string | undefined)?.trim().toLowerCase(),

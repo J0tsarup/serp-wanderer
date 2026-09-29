@@ -26,6 +26,13 @@ function formatCompact(n: number): string {
   return String(n);
 }
 
+// Failed checks (Bright Data error, timeout) are stored with an `error` so
+// they don't read as "not ranking". Positions, deltas, trends and sorting use
+// only checks that actually completed; "Last checked" uses the newest attempt.
+function completedChecks(checks: CheckPoint[]): CheckPoint[] {
+  return checks.filter((c) => !c.error);
+}
+
 function cityLabel(location: string | null): string | null {
   if (!location) return null;
   return location.split(",")[0] || location;
@@ -35,11 +42,27 @@ function PositionCell({
   current,
   previous,
   maxCheckDepth,
+  failedError,
+  hasCompleted,
 }: {
   current: number | null;
   previous: number | null;
   maxCheckDepth: number;
+  failedError?: string | null; // set when the most recent attempt failed
+  hasCompleted?: boolean; // whether any check has ever completed
 }) {
+  if (failedError) {
+    const lastKnown = !hasCompleted ? null : current == null ? `outside top ${maxCheckDepth}` : `#${current}`;
+    return (
+      <div className="text-sm" title={failedError}>
+        <span className="text-fall">Check failed</span>
+        {lastKnown && <div className="text-xs text-muted">last: {lastKnown}</div>}
+      </div>
+    );
+  }
+  if (!hasCompleted) {
+    return <span className="text-sm text-muted">—</span>;
+  }
   if (current == null) {
     return <span className="text-sm text-muted">Outside top {maxCheckDepth}</span>;
   }
@@ -118,18 +141,20 @@ function SortHeader({
 }
 
 function toCsv(rows: KeywordRow[]): string {
-  const header = ["Keyword", "Tags", "Country", "City", "Device", "Position", "Ranking URL", "Last checked"];
+  const header = ["Keyword", "Tags", "Country", "City", "Device", "Position", "Ranking URL", "Last checked", "Last check error"];
   const lines = rows.map((kw) => {
     const [latest] = kw.checks;
+    const [lastGood] = completedChecks(kw.checks);
     return [
       kw.term,
       kw.tags.join("; "),
       kw.country.toUpperCase(),
       cityLabel(kw.location) ?? "",
       kw.device,
-      latest?.position ?? "",
-      latest?.url ?? "",
+      lastGood?.position ?? "",
+      lastGood?.url ?? "",
       latest ? new Date(latest.checkedAt).toISOString() : "",
+      latest?.error ?? "",
     ]
       .map((v) => `"${String(v).replace(/"/g, '""')}"`)
       .join(",");
@@ -141,7 +166,7 @@ function toCsv(rows: KeywordRow[]): string {
 // trends elsewhere. Limited to whatever history is loaded (the last 30
 // checks per keyword), same as the in-app trend chart.
 function toFullHistoryCsv(rows: KeywordRow[]): string {
-  const header = ["Keyword", "Tags", "Country", "City", "Device", "Date", "Position", "Ranking URL"];
+  const header = ["Keyword", "Tags", "Country", "City", "Device", "Date", "Position", "Ranking URL", "Error"];
   const lines: string[] = [];
   rows.forEach((kw) => {
     kw.checks.forEach((c) => {
@@ -155,6 +180,7 @@ function toFullHistoryCsv(rows: KeywordRow[]): string {
           new Date(c.checkedAt).toISOString(),
           c.position ?? "",
           c.url ?? "",
+          c.error ?? "",
         ]
           .map((v) => `"${String(v).replace(/"/g, '""')}"`)
           .join(",")
@@ -228,9 +254,10 @@ export default function KeywordTable({
     if (!sortColumn || !sortDirection) return filtered;
     const withValue = filtered.map((kw) => {
       const [latest] = kw.checks;
+      const [lastGood] = completedChecks(kw.checks);
       const value =
         sortColumn === "position"
-          ? latest?.position ?? null
+          ? lastGood?.position ?? null
           : latest
           ? new Date(latest.checkedAt).getTime()
           : null;
@@ -351,25 +378,43 @@ export default function KeywordTable({
 
     setBulkBusy(true);
     setActionsMenuOpen(false);
-    const res = await fetch("/api/keywords/bulk-action", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ids, action, ...extra }),
-    }).catch(() => null);
-    const body = await res?.json().catch(() => null);
-    setBulkBusy(false);
 
     if (action === "check") {
-      setCheckingIds((prev) => {
-        const next = new Set(prev);
-        ids.forEach((id) => next.delete(id));
-        return next;
-      });
-      const outcomes = body?.outcomes as { keywordId: string; error?: string }[] | undefined;
-      outcomes?.forEach((o) => {
-        if (!o.error) flashUpdated(o.keywordId);
-      });
+      // Checked in small batches so a big selection never runs as one long
+      // request (and rows update as each batch finishes).
+      const CHUNK = 5;
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        const chunk = ids.slice(i, i + CHUNK);
+        const res = await fetch("/api/keywords/bulk-action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: chunk, action }),
+        }).catch(() => null);
+        const body = await res?.json().catch(() => null);
+        const outcomes = (body?.outcomes as { keywordId: string; error?: string }[] | undefined) ?? [];
+        setErrors((prev) => {
+          const next = { ...prev };
+          outcomes.forEach((o) => (next[o.keywordId] = o.error ?? ""));
+          return next;
+        });
+        outcomes.forEach((o) => {
+          if (!o.error) flashUpdated(o.keywordId);
+        });
+        setCheckingIds((prev) => {
+          const next = new Set(prev);
+          chunk.forEach((id) => next.delete(id));
+          return next;
+        });
+        router.refresh();
+      }
+    } else {
+      await fetch("/api/keywords/bulk-action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids, action, ...extra }),
+      }).catch(() => null);
     }
+    setBulkBusy(false);
 
     setSelected(new Set());
     router.refresh();
@@ -603,12 +648,16 @@ export default function KeywordTable({
 
       <div className="divide-y divide-line">
         {visible.map((kw, index) => {
-          const [latest, prev] = kw.checks;
+          const [latest] = kw.checks;
+          const good = completedChecks(kw.checks);
+          const [lastGood, prevGood] = good;
+          const latestFailed = latest?.error ?? null;
           const isOpen = expanded === kw.id;
           const isChecking = checkingIds.has(kw.id);
           const isRemoving = removingId === kw.id;
           const justUpdated = justUpdatedIds.has(kw.id);
-          const error = errors[kw.id];
+          // In-session error from a manual check, else the stored one from the last attempt.
+          const error = errors[kw.id] || latestFailed;
           const city = cityLabel(kw.location);
           const gsc = gscMetrics?.[kw.term.toLowerCase()];
 
@@ -658,16 +707,18 @@ export default function KeywordTable({
                 {nameBlock}
 
                 <PositionCell
-                  current={latest?.position ?? null}
-                  previous={prev?.position ?? null}
+                  current={lastGood?.position ?? null}
+                  previous={prevGood?.position ?? null}
                   maxCheckDepth={maxCheckDepth}
+                  failedError={latestFailed}
+                  hasCompleted={!!lastGood}
                 />
 
                 {gscMetrics && <GscCell gsc={gsc} />}
 
-                <Sparkline values={kw.checks.slice().reverse().map((c) => c.position)} />
+                <Sparkline values={good.slice().reverse().map((c) => c.position)} />
 
-                <RankingUrlCell url={latest?.url} />
+                <RankingUrlCell url={lastGood?.url} />
 
                 {latest ? (
                   <RelativeTime iso={latest.checkedAt} className="text-xs text-muted cursor-default" />
@@ -707,11 +758,13 @@ export default function KeywordTable({
 
                   <div className="flex items-center justify-between gap-3">
                     <PositionCell
-                      current={latest?.position ?? null}
-                      previous={prev?.position ?? null}
+                      current={lastGood?.position ?? null}
+                      previous={prevGood?.position ?? null}
                       maxCheckDepth={maxCheckDepth}
+                      failedError={latestFailed}
+                      hasCompleted={!!lastGood}
                     />
-                    <Sparkline values={kw.checks.slice().reverse().map((c) => c.position)} />
+                    <Sparkline values={good.slice().reverse().map((c) => c.position)} />
                     {latest ? (
                       <RelativeTime iso={latest.checkedAt} className="text-xs text-muted cursor-default shrink-0" />
                     ) : (
@@ -719,9 +772,9 @@ export default function KeywordTable({
                     )}
                   </div>
 
-                  {(latest?.url || gsc) && (
+                  {(lastGood?.url || gsc) && (
                     <div className="flex items-center justify-between gap-3 text-xs">
-                      <RankingUrlCell url={latest?.url} />
+                      <RankingUrlCell url={lastGood?.url} />
                       {gsc && (
                         <span className="text-muted shrink-0">
                           {formatCompact(gsc.clicks)} clicks · {formatCompact(gsc.impressions)} impr
@@ -757,7 +810,7 @@ export default function KeywordTable({
 
               {isOpen && (
                 <div className="pb-4 pl-0">
-                  <PositionChart checks={kw.checks} maxCheckDepth={maxCheckDepth} />
+                  <PositionChart checks={good} maxCheckDepth={maxCheckDepth} />
                 </div>
               )}
             </div>

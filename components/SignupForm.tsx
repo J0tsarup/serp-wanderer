@@ -7,6 +7,7 @@ import { Spinner } from "./Spinner";
 export default function SignupForm() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
@@ -19,7 +20,7 @@ export default function SignupForm() {
     const res = await fetch("/api/auth/signup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username, password, inviteCode }),
     });
 
     setLoading(false);
@@ -63,6 +64,19 @@ export default function SignupForm() {
           placeholder="At least 5 characters"
           className={inputClasses}
           autoComplete="new-password"
+        />
+      </div>
+      <div>
+        <label className="block text-sm text-ink mb-1" htmlFor="invite">
+          Invite code
+        </label>
+        <input
+          id="invite"
+          value={inviteCode}
+          onChange={(e) => setInviteCode(e.target.value)}
+          placeholder="Ask the admin for the code"
+          className={inputClasses}
+          autoComplete="off"
         />
       </div>
       {error && <p className="text-xs text-fall">{error}</p>}

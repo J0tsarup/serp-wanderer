@@ -4,26 +4,26 @@
 // request as clean JSON — no HTML parsing needed. Checking beyond position 10
 // means paging with Google's `start` param (start=10, 20, ...) across
 // multiple requests — see checkKeyword in ./rank.ts, which drives this via
-// the `page` argument below.
+// the `page` argument below. Results are normalized to SerpItem so ranking
+// and link handling (./serp/*) are shared with every other provider.
 
-export type OrganicResult = {
+import { SerpProviderError } from "./serp/errors";
+import type { SerpItem } from "./serp/resolve";
+
+type OrganicResult = {
   link: string;
   title: string;
   description?: string;
-  rank?: number;
-  global_rank?: number;
+  display_link?: string;
+  rank?: number; // position within the organic results
+  global_rank?: number; // position across every SERP element (ads, snippets, ...) — not used
 };
 
-export type SerpResult = {
-  organic: OrganicResult[];
-};
-
-export class BrightDataError extends Error {
-  status?: number;
+/** Kept as a named subclass so existing `instanceof` checks still read clearly. */
+export class BrightDataError extends SerpProviderError {
   constructor(message: string, status?: number) {
-    super(message);
+    super(message, status);
     this.name = "BrightDataError";
-    this.status = status;
   }
 }
 
@@ -41,7 +41,7 @@ export async function fetchSerp(params: {
   device?: "desktop" | "mobile";
   location?: string | null; // optional city-level targeting (Google Ads canonical geo-target name), sent as Google's `uule` param
   page?: number; // 0-indexed page of results; page 1 = results 10-19, etc.
-}): Promise<SerpResult> {
+}): Promise<{ items: SerpItem[] }> {
   const { apiKey, zone } = params;
   if (!apiKey || !zone) {
     throw new BrightDataError(
@@ -107,46 +107,13 @@ export async function fetchSerp(params: {
   // `organic` array, or that same object wrapped in a single-element array
   // — handle both rather than assuming one shape.
   const data = Array.isArray(raw) ? raw[0] : (raw as { organic?: unknown[] } | null);
-  return { organic: (data?.organic as OrganicResult[]) ?? [] };
-}
-
-/**
- * Extract a bare hostname for comparison, e.g.
- * "https://www.hardypaw.com/products/x" -> "hardypaw.com"
- */
-function bareHost(url: string): string {
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    return host.startsWith("www.") ? host.slice(4) : host;
-  } catch {
-    return "";
-  }
-}
-
-/**
- * Given SERP results and a target domain, find the best-ranking match.
- * Returns null if the domain doesn't appear in the fetched results.
- *
- * Position is read from `global_rank` or `rank` (Bright Data has been
- * observed using either depending on the request). If neither field is
- * present, falls back to the result's position in the array, offset by
- * `pageOffset` so page 2+ results still number correctly (11, 12, ... not
- * restarting at 1).
- */
-export function findRanking(
-  serp: SerpResult,
-  targetDomain: string,
-  pageOffset = 0
-): { position: number; url: string } | null {
-  const target = targetDomain.toLowerCase().replace(/^www\./, "");
-
-  const ranked = serp.organic.map((r, i) => ({
-    ...r,
-    position: r.global_rank ?? r.rank ?? pageOffset + i + 1,
-  }));
-
-  const match = ranked.sort((a, b) => a.position - b.position).find((r) => bareHost(r.link) === target);
-
-  if (!match) return null;
-  return { position: match.position, url: match.link };
+  const organic = ((data?.organic as OrganicResult[]) ?? []).filter((r) => r && typeof r.link === "string");
+  return {
+    items: organic.map((r) => ({
+      link: r.link,
+      title: r.title,
+      displayUrl: r.display_link ?? null,
+      rank: r.rank, // organic rank only — see findRanking in ./serp/match.ts
+    })),
+  };
 }

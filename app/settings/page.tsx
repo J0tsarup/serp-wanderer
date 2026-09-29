@@ -36,11 +36,16 @@ export default async function SettingsPage({
         brightData={
           <div className="space-y-4">
             <p className="text-sm text-muted">
-              Your Bright Data credentials and default search location. Stored in the database —
-              nothing to configure in env vars for day-to-day use.
+              Which service runs rank checks, its credentials, and your default search location.
+              Stored in the database — nothing to configure in env vars for day-to-day use.
             </p>
-            <BalanceDisplay hasApiKey={!!settings.brightdataApiKey} />
+            {settings.serpProvider === "brightdata" && (
+              <BalanceDisplay hasApiKey={!!settings.brightdataApiKey} />
+            )}
             <SettingsForm
+              currentProvider={settings.serpProvider}
+              currentSrTokenMasked={maskSecret(settings.scrapingRobotToken)}
+              currentSrRender={settings.scrapingRobotRender}
               currentKeyMasked={maskSecret(settings.brightdataApiKey)}
               currentZone={settings.brightdataZone ?? ""}
               currentCountry={settings.defaultCountry}

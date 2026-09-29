@@ -2,7 +2,8 @@ import { notFound, redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
 import { getSessionUser } from "@/lib/auth";
-import { tryGetQueryMetricsForUser } from "@/lib/google";
+import { tryGetQueryMetricsForDomain, propertyForDomain } from "@/lib/google";
+import DomainGscProperty from "@/components/DomainGscProperty";
 import AddKeywordTrigger from "@/components/AddKeywordTrigger";
 import KeywordTable from "@/components/KeywordTable";
 import RefreshButton from "@/components/RefreshButton";
@@ -14,7 +15,7 @@ export default async function DomainPage({ params }: { params: { id: string } })
   const user = await getSessionUser();
   if (!user) redirect("/login");
 
-  const [domain, settings, gscMetricsMap] = await Promise.all([
+  const [domain, settings] = await Promise.all([
     prisma.domain.findUnique({
       where: { id: params.id },
       include: {
@@ -30,10 +31,17 @@ export default async function DomainPage({ params }: { params: { id: string } })
       },
     }),
     getSettings(user.id),
-    tryGetQueryMetricsForUser(user.id),
   ]);
 
   if (!domain || domain.userId !== user.id) notFound();
+
+  // Search Console data comes from this domain's own property (or the
+  // account's, if it covers this domain) — never another site's.
+  const [gscMetricsMap, googleConn] = await Promise.all([
+    tryGetQueryMetricsForDomain(user.id, domain),
+    prisma.googleConnection.findUnique({ where: { userId: user.id }, select: { accessToken: true, siteUrl: true } }),
+  ]);
+  const gscProperty = propertyForDomain(domain, googleConn?.siteUrl);
 
   const keywords = domain.keywords.map((k) => ({
     id: k.id,
@@ -46,6 +54,7 @@ export default async function DomainPage({ params }: { params: { id: string } })
       checkedAt: c.checkedAt.toISOString(),
       position: c.position,
       url: c.url,
+      error: c.error,
     })),
   }));
 
@@ -56,7 +65,16 @@ export default async function DomainPage({ params }: { params: { id: string } })
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold text-ink truncate">{domain.name}</h1>
+        <div className="min-w-0">
+          <h1 className="text-xl font-semibold text-ink truncate">{domain.name}</h1>
+          {googleConn?.accessToken && (
+            <DomainGscProperty
+              domainId={domain.id}
+              current={gscProperty}
+              isOwnSetting={!!domain.gscSiteUrl}
+            />
+          )}
+        </div>
         <div className="flex items-center gap-2 shrink-0">
           <RefreshButton domainId={domain.id} />
           <AddKeywordTrigger
@@ -79,7 +97,12 @@ export default async function DomainPage({ params }: { params: { id: string } })
 
       {gscMetrics && (
         <section className="border-t border-line pt-6">
-          <DiscoverKeywords domainId={domain.id} />
+          <DiscoverKeywords
+            domainId={domain.id}
+            defaultCountry={settings.defaultCountry}
+            defaultLanguage={settings.defaultLanguage}
+            defaultLocation={settings.defaultLocation ?? ""}
+          />
         </section>
       )}
     </div>

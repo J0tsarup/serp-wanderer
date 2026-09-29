@@ -161,18 +161,71 @@ export type SearchAnalyticsRow = {
   position: number;
 };
 
+function bareDomain(host: string): string {
+  const h = host.trim().toLowerCase().replace(/\.$/, "");
+  return h.startsWith("www.") ? h.slice(4) : h;
+}
+
 /**
- * Convenience wrapper: resolves a valid access token and the user's chosen
- * property, then fetches the query metrics map. Returns null (rather than
- * throwing) if Search Console isn't connected/configured — callers treat
- * that as "no GSC data available," not an error.
+ * Whether a Search Console property covers a tracked domain.
+ * - Domain properties ("sc-domain:hardypaw.com") cover the domain and all its
+ *   subdomains.
+ * - URL-prefix properties ("https://www.hardypaw.com/") match on hostname,
+ *   ignoring a leading "www.".
  */
-export async function tryGetQueryMetricsForUser(userId: string): Promise<Map<string, QueryMetric> | null> {
+export function siteMatchesDomain(siteUrl: string, domainName: string): boolean {
+  const domain = bareDomain(domainName);
+  if (siteUrl.startsWith("sc-domain:")) {
+    const prop = bareDomain(siteUrl.slice("sc-domain:".length));
+    return domain === prop || domain.endsWith(`.${prop}`);
+  }
+  try {
+    return bareDomain(new URL(siteUrl).hostname) === domain;
+  } catch {
+    return false;
+  }
+}
+
+// Query metrics are fetched per property and reused for an hour within a
+// warm server instance, so opening domain pages doesn't pull thousands of
+// Search Console rows on every load.
+const METRICS_TTL_MS = 60 * 60 * 1000;
+const metricsCache = new Map<string, { at: number; data: Map<string, QueryMetric> }>();
+
+/** The Search Console property to use for a domain: its own, else the account's if it covers the domain. */
+export function propertyForDomain(
+  domain: { name: string; gscSiteUrl: string | null },
+  accountSiteUrl: string | null | undefined
+): string | null {
+  if (domain.gscSiteUrl) return domain.gscSiteUrl;
+  if (accountSiteUrl && siteMatchesDomain(accountSiteUrl, domain.name)) return accountSiteUrl;
+  return null;
+}
+
+/**
+ * Resolves a valid access token and the right property for this domain,
+ * then returns the query metrics map. Returns null (rather than throwing)
+ * if Search Console isn't connected or no property applies to this domain —
+ * callers treat that as "no GSC data available," not an error.
+ */
+export async function tryGetQueryMetricsForDomain(
+  userId: string,
+  domain: { name: string; gscSiteUrl: string | null }
+): Promise<Map<string, QueryMetric> | null> {
   const conn = await prisma.googleConnection.findUnique({ where: { userId } });
-  if (!conn?.siteUrl || !conn.accessToken) return null;
+  if (!conn?.accessToken) return null;
+  const siteUrl = propertyForDomain(domain, conn.siteUrl);
+  if (!siteUrl) return null;
+
+  const key = `${userId}|${siteUrl}`;
+  const cached = metricsCache.get(key);
+  if (cached && Date.now() - cached.at < METRICS_TTL_MS) return cached.data;
+
   try {
     const accessToken = await getValidAccessToken(userId);
-    return await getQueryMetrics(accessToken, conn.siteUrl);
+    const data = await getQueryMetrics(accessToken, siteUrl);
+    metricsCache.set(key, { at: Date.now(), data });
+    return data;
   } catch {
     return null;
   }

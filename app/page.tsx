@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
 import { getSessionUser } from "@/lib/auth";
+import { providerConfigured, providerLabel } from "@/lib/serp";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +17,8 @@ export default async function HomePage() {
       include: {
         keywords: {
           include: {
-            checks: { orderBy: { checkedAt: "desc" }, take: 2, select: { position: true } },
+            // Extra rows so failed checks can be skipped (see filter below).
+            checks: { orderBy: { checkedAt: "desc" }, take: 6, select: { position: true, error: true } },
           },
         },
       },
@@ -24,7 +26,7 @@ export default async function HomePage() {
     getSettings(user.id),
   ]);
 
-  const needsSetup = !settings.brightdataApiKey || !settings.brightdataZone;
+  const needsSetup = !providerConfigured(settings);
   const totalKeywords = domains.reduce((sum, d) => sum + d.keywords.length, 0);
 
   // Biggest single mover across every domain — gives the home page something
@@ -33,7 +35,7 @@ export default async function HomePage() {
   let biggestMover: { domainId: string; domainName: string; term: string; delta: number } | null = null;
   for (const d of domains) {
     for (const kw of d.keywords) {
-      const [latest, prev] = kw.checks;
+      const [latest, prev] = kw.checks.filter((c) => !c.error);
       if (latest?.position != null && prev?.position != null) {
         const delta = prev.position - latest.position;
         if (delta !== 0 && (!biggestMover || Math.abs(delta) > Math.abs(biggestMover.delta))) {
@@ -48,7 +50,7 @@ export default async function HomePage() {
       {needsSetup && (
         <div className="rounded-md border border-line bg-surface px-4 py-3 flex items-center justify-between">
           <p className="text-sm text-ink">
-            Add your Bright Data API key and zone before adding keywords — checks won't run without them.
+            Add your {providerLabel(settings.serpProvider)} credentials before adding keywords — checks won't run without them.
           </p>
           <Link href="/settings" className="text-sm text-accent whitespace-nowrap ml-4">
             Go to Settings

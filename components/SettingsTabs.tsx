@@ -18,7 +18,7 @@ export default function SettingsTabs({
   const [tab, setTab] = useState<Tab>(initialTab);
 
   const tabs: { id: Tab; label: string }[] = [
-    { id: "brightdata", label: "Bright Data" },
+    { id: "brightdata", label: "Rank checks" },
     { id: "searchconsole", label: "Search Console" },
     { id: "digest", label: "Email digest" },
   ];

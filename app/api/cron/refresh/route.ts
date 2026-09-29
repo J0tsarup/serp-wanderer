@@ -1,14 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import { checkAllKeywords } from "@/lib/rank";
+import { checkStaleKeywords } from "@/lib/rank";
 
-// Never statically prerendered — this route always reads/writes live
-// database state, and some deployments run before the schema migration
-// that adds newer columns has been applied, which would otherwise break
-// the production build.
+// Never statically prerendered — always reads/writes live database state.
 export const dynamic = "force-dynamic";
 
-// Allow this route to run long enough to check many keywords sequentially.
+// Vercel's current limit with Fluid compute (on by default) is 300s on every
+// plan, Hobby included. Each run works in batches inside that budget.
 export const maxDuration = 300;
+
+// Stop starting new checks with this much of maxDuration left, so a run
+// always finishes cleanly instead of being killed mid-check.
+const BUDGET_MS = (maxDuration - 30) * 1000;
+
+// A keyword checked in the last 20h is considered fresh. vercel.json runs
+// this several times a day; each run only picks up keywords still due, so
+// big lists get spread across runs and nothing is checked (or paid for) twice.
+const FRESH_FOR_MS = 20 * 60 * 60 * 1000;
 
 function isAuthorized(req: NextRequest): boolean {
   const secret = process.env.CRON_SECRET;
@@ -31,6 +38,11 @@ export async function GET(req: NextRequest) {
   if (!isAuthorized(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  const outcomes = await checkAllKeywords();
-  return NextResponse.json({ checked: outcomes.length, outcomes });
+  const { outcomes, remaining } = await checkStaleKeywords({ budgetMs: BUDGET_MS, freshForMs: FRESH_FOR_MS });
+  return NextResponse.json({
+    checked: outcomes.length,
+    failed: outcomes.filter((o) => o.error).length,
+    remaining,
+    outcomes,
+  });
 }

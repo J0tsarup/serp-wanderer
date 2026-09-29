@@ -5,6 +5,9 @@ import { useRouter } from "next/navigation";
 import LocationInput from "./LocationInput";
 
 export default function SettingsForm({
+  currentProvider,
+  currentSrTokenMasked,
+  currentSrRender,
   currentKeyMasked,
   currentZone,
   currentCountry,
@@ -12,6 +15,9 @@ export default function SettingsForm({
   currentLocation,
   currentDepth,
 }: {
+  currentProvider: "brightdata" | "scrapingrobot";
+  currentSrTokenMasked: string | null;
+  currentSrRender: boolean;
   currentKeyMasked: string | null;
   currentZone: string;
   currentCountry: string;
@@ -19,6 +25,9 @@ export default function SettingsForm({
   currentLocation: string;
   currentDepth: number;
 }) {
+  const [provider, setProvider] = useState(currentProvider);
+  const [srToken, setSrToken] = useState("");
+  const [srRender, setSrRender] = useState(currentSrRender);
   const [apiKey, setApiKey] = useState("");
   const [zone, setZone] = useState(currentZone);
   const [country, setCountry] = useState(currentCountry);
@@ -40,6 +49,9 @@ export default function SettingsForm({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        serpProvider: provider,
+        scrapingRobotToken: srToken, // blank = leave unchanged
+        scrapingRobotRender: srRender,
         brightdataApiKey: apiKey, // blank = leave unchanged, see lib/settings.ts
         brightdataZone: zone,
         defaultCountry: country,
@@ -55,6 +67,7 @@ export default function SettingsForm({
       return;
     }
     setApiKey("");
+    setSrToken("");
     setSaved(true);
     router.refresh();
   }
@@ -66,6 +79,66 @@ export default function SettingsForm({
 
   return (
     <form onSubmit={submit} className="space-y-5">
+      <div>
+        <label className={labelClasses} htmlFor="provider">
+          Rank-check provider
+        </label>
+        <select
+          id="provider"
+          value={provider}
+          onChange={(e) => setProvider(e.target.value as "brightdata" | "scrapingrobot")}
+          className={inputClasses}
+        >
+          <option value="brightdata">Bright Data (SERP API)</option>
+          <option value="scrapingrobot">Scraping Robot</option>
+        </select>
+        <p className={helpClasses}>
+          Which service fetches Google results. Credentials for both are kept, so you can switch
+          back and forth. Positions and ranking URLs are worked out the same way for either.
+        </p>
+      </div>
+
+      {provider === "scrapingrobot" && (
+        <>
+          <div>
+            <label className={labelClasses} htmlFor="srToken">
+              Scraping Robot API token
+            </label>
+            <input
+              id="srToken"
+              type="password"
+              value={srToken}
+              onChange={(e) => setSrToken(e.target.value)}
+              placeholder={currentSrTokenMasked ? currentSrTokenMasked : "Paste your API token"}
+              className={inputClasses}
+              autoComplete="off"
+            />
+            <p className={helpClasses}>
+              {currentSrTokenMasked
+                ? "A token is already saved. Leave this blank to keep it, or paste a new one to replace it."
+                : "From your Scraping Robot dashboard → API."}
+            </p>
+          </div>
+          <label className="flex items-start gap-2 text-sm text-ink">
+            <input
+              type="checkbox"
+              checked={srRender}
+              onChange={(e) => setSrRender(e.target.checked)}
+              className="accent-accent mt-0.5"
+            />
+            <span>
+              Render JavaScript
+              <span className="block text-xs text-muted">
+                Uses Scraping Robot's browser module — slower. Try it if results come back empty or
+                blocked. Mobile keywords aren't supported with Scraping Robot.
+              </span>
+            </span>
+          </label>
+        </>
+      )}
+
+      {provider === "brightdata" && (
+      <>
       <div>
         <label className={labelClasses} htmlFor="apiKey">
           Bright Data API key
@@ -98,6 +171,8 @@ export default function SettingsForm({
           className={inputClasses}
         />
       </div>
+      </>
+      )}
 
       <div className="grid grid-cols-2 gap-4">
         <div>
@@ -172,10 +247,8 @@ export default function SettingsForm({
         <p className={helpClasses}>
           How far into Google's results to look for your domain. Stops early the moment it's
           found — the "up to" figure is only the worst case, when a keyword isn't ranking at all.
-          Deeper checking uses more Bright Data credits per keyword, and each extra request adds
-          time. If you're on Vercel's free Hobby plan (a hard ~10s limit per check), depths above
-          10 risk occasionally timing out — that's a platform limit, not something this app
-          controls. Vercel Pro removes that ceiling.
+          Deeper checking uses more credits per keyword and each extra request adds a few seconds.
+          Refreshes run in batches, so deeper checks just take longer overall rather than timing out.
         </p>
       </div>
 

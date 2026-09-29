@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth";
-import { tryGetQueryMetricsForUser } from "@/lib/google";
+import { tryGetQueryMetricsForDomain } from "@/lib/google";
 
 // Never statically prerendered — always reads live database + calls Google.
 export const dynamic = "force-dynamic";
@@ -15,9 +15,12 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
     return NextResponse.json({ error: "Domain not found" }, { status: 404 });
   }
 
-  const metrics = await tryGetQueryMetricsForUser(user.id);
+  const metrics = await tryGetQueryMetricsForDomain(user.id, domain);
   if (!metrics) {
-    return NextResponse.json({ error: "Search Console isn't connected" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Search Console isn't connected, or no property is set for this domain" },
+      { status: 400 }
+    );
   }
 
   const tracked = await prisma.keyword.findMany({ where: { domainId: params.id }, select: { term: true } });

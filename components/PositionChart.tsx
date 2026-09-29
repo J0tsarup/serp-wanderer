@@ -2,7 +2,7 @@
 
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
-export type CheckPoint = { checkedAt: string; position: number | null; url?: string | null };
+export type CheckPoint = { checkedAt: string; position: number | null; url?: string | null; error?: string | null };
 
 export default function PositionChart({
   checks,

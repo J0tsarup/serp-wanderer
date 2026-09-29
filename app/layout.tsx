@@ -45,10 +45,12 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         include: {
           keywords: {
             select: {
+              // A few extra so failed checks can be skipped and still leave
+              // the two most recent real results to compare.
               checks: {
                 orderBy: { checkedAt: "desc" },
-                take: 2,
-                select: { position: true },
+                take: 6,
+                select: { position: true, error: true },
               },
             },
           },
@@ -60,7 +62,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     let improved = 0;
     let declined = 0;
     for (const kw of d.keywords) {
-      const [latest, prev] = kw.checks;
+      const [latest, prev] = kw.checks.filter((c) => !c.error);
       if (latest?.position != null && prev?.position != null && latest.position !== prev.position) {
         if (latest.position < prev.position) improved++;
         else declined++;

@@ -37,6 +37,7 @@ model Domain {
   userId    String?    // nullable only to support the one-time migration from pre-auth data — see signup route, which claims orphaned rows for the first account created
   user      User?      @relation(fields: [userId], references: [id], onDelete: Cascade)
   name      String     // e.g. "hardypaw.com" — bare hostname, no protocol/www
+  gscSiteUrl String?   // Search Console property for this domain, e.g. "sc-domain:hardypaw.com"; null = use the account's property only if it covers this domain
   createdAt DateTime   @default(now())
   keywords  Keyword[]
 
@@ -65,6 +66,7 @@ model RankCheck {
   keyword    Keyword  @relation(fields: [keywordId], references: [id], onDelete: Cascade)
   position   Int?     // null = not found in the results we fetched
   url        String?  // the ranking URL that matched, if found
+  error      String?  // set when the check itself failed (Bright Data error, timeout) — distinguishes "check failed" from "not ranking", which both have a null position
   checkedAt  DateTime @default(now())
 
   @@index([keywordId, checkedAt])
@@ -94,8 +96,11 @@ model Settings {
   id               String   @id @default(cuid())
   userId           String?  @unique // nullable only to support the one-time migration from pre-auth data — see signup route
   user             User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  brightdataApiKey String?
-  brightdataZone   String?
+  serpProvider        String   @default("brightdata") // "brightdata" | "scrapingrobot" — which API runs rank checks
+  brightdataApiKey    String?
+  brightdataZone      String?
+  scrapingRobotToken  String?
+  scrapingRobotRender Boolean  @default(false) // use Scraping Robot's JS-rendering module (HtmlChromeScraper)
   defaultCountry   String   @default("us")
   defaultLanguage  String   @default("en")
   defaultLocation  String?  // optional default city (US only for now) — same canonical-name format as Keyword.location
