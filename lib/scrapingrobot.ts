@@ -129,10 +129,10 @@ async function fetchOnce(token: string, render: boolean, googleUrl: string): Pro
     throw new RetryableError("Google showed a CAPTCHA (unusual-traffic page) to Scraping Robot's proxy");
   }
   if (page === "needs-js") {
-    // Deterministic, so not retried: Google won't serve results without JS.
-    throw new SerpProviderError(
-      "Google requires JavaScript for this search — turn on \"Render JavaScript\" for Scraping Robot in Settings."
-    );
+    // Google shows its "turn on JavaScript" wall to some requests and not
+    // others (other keywords come back fine without JS), so it's retried on
+    // a fresh proxy rather than treated as permanent.
+    throw new RetryableError("Google showed its \"turn on JavaScript\" page instead of results");
   }
   if (page === "results") {
     // A real results page we couldn't read — layout the parser doesn't know.

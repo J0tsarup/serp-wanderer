@@ -129,8 +129,8 @@ export default function SettingsForm({
             <span>
               Render JavaScript
               <span className="block text-xs text-muted">
-                Uses Scraping Robot's browser module — slower. Try it if results come back empty or
-                blocked. Mobile keywords aren't supported with Scraping Robot.
+                Uses Scraping Robot's browser module. In testing it timed out on Google (error 500), so
+                leave it off unless that changes. Mobile keywords aren't supported with Scraping Robot.
               </span>
             </span>
           </label>

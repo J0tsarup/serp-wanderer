@@ -75,14 +75,27 @@ export async function checkKeyword(keywordId: string): Promise<CheckOutcome> {
     let seenBefore = 0;
 
     for (let page = 0; page < maxPages; page++) {
-      const { items } = await fetchSerpPage(settings, {
-        keyword: keyword.term,
-        country: keyword.country,
-        language: keyword.language,
-        device: keyword.device === "mobile" ? "mobile" : "desktop",
-        location: keyword.location,
-        page,
-      });
+      let items;
+      try {
+        ({ items } = await fetchSerpPage(settings, {
+          keyword: keyword.term,
+          country: keyword.country,
+          language: keyword.language,
+          device: keyword.device === "mobile" ? "mobile" : "desktop",
+          location: keyword.location,
+          page,
+        }));
+      } catch (err) {
+        // Say how far the check got, so a failure on a deep page doesn't
+        // read the same as one on the first page.
+        if (page > 0 && err instanceof SerpProviderError) {
+          throw new SerpProviderError(
+            `Not in the top ${seenBefore} results; page ${page + 1} then failed — ${err.message}`,
+            err.status
+          );
+        }
+        throw err;
+      }
 
       const match = findRanking(items, keyword.domain.name, seenBefore);
       if (match) {
