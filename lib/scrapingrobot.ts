@@ -112,11 +112,19 @@ async function fetchOnce(token: string, render: boolean, googleUrl: string): Pro
   const html = extractHtml(text);
   if (!html) throw new RetryableError("Scraping Robot returned an empty page");
 
+  // Parse first, judge second: if the page has organic results, it's a
+  // results page — full stop. (Checking for block-page words up front was
+  // wrong: normal Google result pages contain some of the same strings in
+  // their scripts, which flagged good pages as CAPTCHAs.)
+  const items = parseGoogleHtml(html);
+  if (items.length > 0) return items;
+
+  // No results found — work out why, and log the page for inspection.
   const page = classifyGooglePage(html);
-  if (page !== "ok") {
-    // Logged so the real page can be inspected in Vercel's logs.
-    console.warn(`Google returned a "${page}" page via Scraping Robot:`, html.replace(/\s+/g, " ").slice(0, 400));
-  }
+  console.warn(
+    `Scraping Robot: no organic results parsed (page looks like "${page}"):`,
+    html.replace(/\s+/g, " ").slice(0, 600)
+  );
   if (page === "captcha") {
     throw new RetryableError("Google showed a CAPTCHA (unusual-traffic page) to Scraping Robot's proxy");
   }
@@ -126,15 +134,26 @@ async function fetchOnce(token: string, render: boolean, googleUrl: string): Pro
       "Google requires JavaScript for this search — turn on \"Render JavaScript\" for Scraping Robot in Settings."
     );
   }
-
-  return parseGoogleHtml(html);
+  if (page === "results") {
+    // A real results page we couldn't read — layout the parser doesn't know.
+    throw new SerpProviderError(
+      "Google returned a results page but no organic results could be read from it — the page layout may have changed (details in the server logs)."
+    );
+  }
+  throw new RetryableError("Scraping Robot returned a page that isn't Google results");
 }
 
-/** What kind of page Google actually returned. */
-function classifyGooglePage(html: string): "ok" | "captcha" | "needs-js" {
-  if (/\/sorry\/index|unusual traffic from your computer|id="captcha-form"|g-recaptcha/i.test(html)) return "captcha";
+/**
+ * What kind of page Google returned, used only when no results were parsed.
+ * A genuine results page (title "… - Google Search", SearchResultsPage
+ * schema) is never treated as a block page, whatever its scripts contain.
+ */
+function classifyGooglePage(html: string): "results" | "captcha" | "needs-js" | "unknown" {
+  const isResultsPage =
+    /itemtype="https?:\/\/schema\.org\/SearchResultsPage"/i.test(html) || /<title>[^<]* - Google Search<\/title>/i.test(html);
+  if (!isResultsPage && /\/sorry\/index|unusual traffic from your computer|id="captcha-form"/i.test(html)) return "captcha";
   if (/enablejs|emsg=SG_REL|httpservice\/retry/i.test(html) && !/<h3/i.test(html)) return "needs-js";
-  return "ok";
+  return isResultsPage ? "results" : "unknown";
 }
 
 /** Response is either raw HTML or JSON wrapping it (`{ status, result, ... }`) — accept both. */
