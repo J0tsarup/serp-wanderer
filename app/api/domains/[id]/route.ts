@@ -1,12 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { keywordListSelect } from "@/lib/keyword-select";
 import { getSessionUser } from "@/lib/auth";
 import { getValidAccessToken, listSites, GoogleApiError } from "@/lib/google";
 
-// Never statically prerendered — this route always reads/writes live
-// database state, and some deployments run before the schema migration
-// that adds newer columns has been applied, which would otherwise break
-// the production build.
+// Always rendered per request — reads live database state.
 export const dynamic = "force-dynamic";
 
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
@@ -18,21 +16,7 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
     include: {
       keywords: {
         orderBy: { createdAt: "asc" },
-        select: {
-            id: true,
-            term: true,
-            country: true,
-            language: true,
-            device: true,
-            location: true,
-            tags: true,
-            createdAt: true,
-            // serpSnapshot deliberately left out — it's loaded per keyword by the side panel.
-            checks: {
-              orderBy: { checkedAt: "desc" },
-              take: 30,
-            },
-          },
+        select: keywordListSelect,
       },
     },
   });

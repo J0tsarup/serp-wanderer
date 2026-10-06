@@ -2,8 +2,10 @@ import { cookies } from "next/headers";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { prisma } from "./db";
+import { SESSION_COOKIE } from "./session-cookie";
 
-export const SESSION_COOKIE = "session_token";
+export { SESSION_COOKIE };
+
 const SESSION_DAYS = 30;
 
 export async function hashPassword(password: string): Promise<string> {

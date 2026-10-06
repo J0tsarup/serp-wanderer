@@ -4,6 +4,8 @@ import { prisma } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth";
 import InsightsView from "@/components/InsightsView";
 
+export const metadata = { title: "Search Console" };
+
 export const dynamic = "force-dynamic";
 
 export default async function SearchConsolePage() {

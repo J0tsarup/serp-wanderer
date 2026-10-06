@@ -3,10 +3,7 @@ import { prisma } from "@/lib/db";
 import { checkKeyword } from "@/lib/rank";
 import { getSessionUser } from "@/lib/auth";
 
-// Never statically prerendered — this route always reads/writes live
-// database state, and some deployments run before the schema migration
-// that adds newer columns has been applied, which would otherwise break
-// the production build.
+// Always rendered per request — reads live database state.
 export const dynamic = "force-dynamic";
 
 // A deep check (checking further than the top 10) pages through multiple

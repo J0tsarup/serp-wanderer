@@ -8,8 +8,12 @@ import { Spinner } from "./Spinner";
 import TagManager from "./TagManager";
 import RelativeTime from "./RelativeTime";
 import MoveDomainModal from "./MoveDomainModal";
-import KeywordDrawer from "./KeywordDrawer";
+import dynamic from "next/dynamic";
 import { useSelection } from "./SelectionContext";
+
+// Loaded on first click: the panel and its chart library (recharts) stay out
+// of the domain page's initial JavaScript.
+const KeywordDrawer = dynamic(() => import("./KeywordDrawer"), { ssr: false });
 
 export type KeywordRow = {
   id: string;

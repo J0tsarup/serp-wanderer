@@ -8,6 +8,8 @@ import GoogleConnectionForm from "@/components/GoogleConnectionForm";
 import DigestSettingsForm from "@/components/DigestSettingsForm";
 import SettingsTabs from "@/components/SettingsTabs";
 
+export const metadata = { title: "Settings" };
+
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage({

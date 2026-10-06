@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Public_Sans, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 import { APP_VERSION, LAST_UPDATED } from "@/lib/version";
@@ -23,9 +23,12 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "SERP Wanderer",
-  description: "Keyword rank tracking powered by Bright Data's SERP API",
+  title: { default: "SERP Wanderer", template: "%s · SERP Wanderer" },
+  description: "Self-hosted Google keyword rank tracker",
+  robots: { index: false, follow: false },
 };
+
+export const viewport: Viewport = { themeColor: "#0B6E4F" };
 
 const lastUpdatedFormatted = new Date(LAST_UPDATED).toLocaleDateString(undefined, {
   year: "numeric",
@@ -34,6 +37,10 @@ const lastUpdatedFormatted = new Date(LAST_UPDATED).toLocaleDateString(undefined
 });
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // Read the session first: it touches cookies, which marks this layout as
+  // per-request, so nothing below queries the database at build time.
+  const user = await getSessionUser();
+
   // Code deployed before the database update → show what to run instead of
   // a bare "Application error".
   const pendingSql = await pendingSchemaSql();
@@ -56,8 +63,6 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       </html>
     );
   }
-
-  const user = await getSessionUser();
 
   // Fetched once here (not per-page) so the sidebar/switcher persists across
   // navigation without a re-fetch flash — the whole point of a workspace

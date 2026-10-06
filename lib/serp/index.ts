@@ -4,7 +4,6 @@ import type { ResolvedSettings } from "../settings";
 import type { SerpItem } from "./resolve";
 
 export type SerpProvider = "brightdata" | "scrapingrobot";
-export const SERP_PROVIDERS: SerpProvider[] = ["brightdata", "scrapingrobot"];
 
 export function providerLabel(p: SerpProvider): string {
   return p === "scrapingrobot" ? "Scraping Robot" : "Bright Data";

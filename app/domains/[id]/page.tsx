@@ -1,5 +1,6 @@
 import { notFound, redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
+import { keywordListSelect } from "@/lib/keyword-select";
 import { getSettings } from "@/lib/settings";
 import { getSessionUser } from "@/lib/auth";
 import { tryGetQueryMetricsForDomain, propertyForDomain } from "@/lib/google";
@@ -22,21 +23,7 @@ export default async function DomainPage({ params }: { params: { id: string } })
       include: {
         keywords: {
           orderBy: { createdAt: "asc" },
-          select: {
-            id: true,
-            term: true,
-            country: true,
-            language: true,
-            device: true,
-            location: true,
-            tags: true,
-            createdAt: true,
-            // serpSnapshot deliberately left out — it's loaded per keyword by the side panel.
-            checks: {
-              orderBy: { checkedAt: "desc" },
-              take: 30,
-            },
-          },
+          select: keywordListSelect,
         },
       },
     }),

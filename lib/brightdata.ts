@@ -9,6 +9,7 @@
 
 import { SerpProviderError } from "./serp/errors";
 import type { SerpItem } from "./serp/resolve";
+import { parseGoogleHtml } from "./serp/google-html";
 
 type OrganicResult = {
   link: string;
@@ -119,16 +120,38 @@ async function fetchSerpOnce(params: {
     throw err;
   }
 
+  // Read the body as text first so a non-JSON answer can be seen (and
+  // logged) instead of disappearing into a generic parse error. A timeout
+  // while the body is still arriving throws here and is retried upstream.
+  const text = await resp.text();
+  const where = `page ${(params.page ?? 0) + 1} of "${params.keyword}"`;
+
+  if (!text.trim()) {
+    console.warn(`Bright Data returned an empty body for ${where} (status ${resp.status})`);
+    const err = new BrightDataError("Bright Data returned an empty response for this page.");
+    err.retryable = true;
+    throw err;
+  }
+
   let raw: unknown;
   try {
-    raw = await resp.json();
+    raw = JSON.parse(text);
   } catch {
-    // A response that returned resp.ok but fails to parse as JSON almost
-    // always means the connection was cut mid-response — usually the
-    // platform's own execution timeout killing the request, not Bright
-    // Data itself. Surface that plainly instead of the raw parse error.
+    // Not JSON. If it's the Google page itself (Bright Data couldn't parse
+    // it into JSON), read the results out of the HTML — the same reader the
+    // Scraping Robot integration uses.
+    if (/<html|<!doctype html/i.test(text.slice(0, 2000))) {
+      const items = parseGoogleHtml(text);
+      console.warn(
+        `Bright Data sent HTML instead of JSON for ${where}; read ${items.length} results from it.`,
+        items.length ? "" : text.replace(/\s+/g, " ").slice(0, 400)
+      );
+      if (items.length > 0) return { items };
+    } else {
+      console.warn(`Bright Data sent a non-JSON body for ${where}:`, text.replace(/\s+/g, " ").slice(0, 400));
+    }
     const err = new BrightDataError(
-      "Bright Data's response was empty or cut off — it was probably too slow to answer. This is usually a Bright Data slowdown or outage."
+      "Bright Data's answer for this page wasn't usable results (details in the server logs) — usually a Bright Data-side problem with deeper result pages."
     );
     err.retryable = true;
     throw err;

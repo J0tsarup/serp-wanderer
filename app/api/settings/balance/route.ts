@@ -7,10 +7,7 @@ import { getSessionUser } from "@/lib/auth";
 // documented public API for that figure, so this can't show "X/5,000 free
 // credits used." It's still useful once you're spending beyond the free tier.
 //
-// Never statically prerendered — this route always reads/writes live
-// database state, and some deployments run before the schema migration
-// that adds newer columns has been applied, which would otherwise break
-// the production build.
+// Always rendered per request — reads live database state.
 export const dynamic = "force-dynamic";
 
 export async function GET() {

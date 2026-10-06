@@ -1,22 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isCronAuthorized } from "@/lib/cron-auth";
 import { prisma } from "@/lib/db";
 import { getValidAccessToken, querySearchAnalytics, GoogleApiError } from "@/lib/google";
 import { sendEmail, EmailError } from "@/lib/email";
 
-// Never statically prerendered — this route always reads/writes live
-// database state, and some deployments run before the schema migration
-// that adds newer columns has been applied, which would otherwise break
-// the production build.
+// Always rendered per request — reads live database state.
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-function isAuthorized(req: NextRequest): boolean {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return false;
-  const bearer = req.headers.get("authorization");
-  if (bearer === `Bearer ${secret}`) return true;
-  const query = req.nextUrl.searchParams.get("secret");
-  return query === secret;
+
+// Search queries and property URLs come from Google, not us — escape them
+// before they go into the email's HTML.
+function esc(value: string): string {
+  return value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }
 
 function buildDigestHtml(siteUrl: string, startDate: string, endDate: string, rows: { keys: string[]; clicks: number; impressions: number; position: number }[]) {
@@ -27,14 +23,14 @@ function buildDigestHtml(siteUrl: string, startDate: string, endDate: string, ro
     .slice(0, 15)
     .map(
       (r) =>
-        `<tr><td style="padding:6px 10px;border-bottom:1px solid #e1e6e1;">${r.keys[0]}</td><td style="padding:6px 10px;border-bottom:1px solid #e1e6e1;text-align:right;">${r.clicks}</td><td style="padding:6px 10px;border-bottom:1px solid #e1e6e1;text-align:right;">${r.impressions}</td><td style="padding:6px 10px;border-bottom:1px solid #e1e6e1;text-align:right;">${r.position.toFixed(1)}</td></tr>`
+        `<tr><td style="padding:6px 10px;border-bottom:1px solid #e1e6e1;">${esc(r.keys[0])}</td><td style="padding:6px 10px;border-bottom:1px solid #e1e6e1;text-align:right;">${r.clicks}</td><td style="padding:6px 10px;border-bottom:1px solid #e1e6e1;text-align:right;">${r.impressions}</td><td style="padding:6px 10px;border-bottom:1px solid #e1e6e1;text-align:right;">${r.position.toFixed(1)}</td></tr>`
     )
     .join("");
 
   return `
     <div style="font-family:sans-serif;color:#16241c;max-width:600px;">
       <h2 style="margin-bottom:4px;">Search Console — last 7 days</h2>
-      <p style="color:#5f6f66;margin-top:0;">${siteUrl} · ${startDate} to ${endDate}</p>
+      <p style="color:#5f6f66;margin-top:0;">${esc(siteUrl)} · ${startDate} to ${endDate}</p>
       <p><strong>${totalClicks}</strong> clicks · <strong>${totalImpressions}</strong> impressions</p>
       <table style="border-collapse:collapse;width:100%;font-size:14px;">
         <thead>
@@ -52,7 +48,7 @@ function buildDigestHtml(siteUrl: string, startDate: string, endDate: string, ro
 }
 
 export async function GET(req: NextRequest) {
-  if (!isAuthorized(req)) {
+  if (!isCronAuthorized(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

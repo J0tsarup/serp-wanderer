@@ -2,10 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth";
 
-// Never statically prerendered — this route always reads/writes live
-// database state, and some deployments run before the schema migration
-// that adds newer columns has been applied, which would otherwise break
-// the production build.
+// Always rendered per request — reads live database state.
 export const dynamic = "force-dynamic";
 
 async function assertOwnedDomain(domainId: string, userId: string) {

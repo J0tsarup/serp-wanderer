@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isCronAuthorized } from "@/lib/cron-auth";
 import { checkStaleKeywords } from "@/lib/rank";
 
 // Never statically prerendered — always reads/writes live database state.
@@ -17,25 +18,9 @@ const BUDGET_MS = (maxDuration - 30) * 1000;
 // big lists get spread across runs and nothing is checked (or paid for) twice.
 const FRESH_FOR_MS = 20 * 60 * 60 * 1000;
 
-function isAuthorized(req: NextRequest): boolean {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return false;
-
-  // Vercel automatically sends CRON_SECRET as this exact header on scheduled
-  // invocations of routes listed in vercel.json — no extra setup needed.
-  const bearer = req.headers.get("authorization");
-  if (bearer === `Bearer ${secret}`) return true;
-
-  // Render (or curl, or any other scheduler) — pass ?secret=... instead,
-  // since not every scheduler lets you set a custom header.
-  const query = req.nextUrl.searchParams.get("secret");
-  if (query === secret) return true;
-
-  return false;
-}
 
 export async function GET(req: NextRequest) {
-  if (!isAuthorized(req)) {
+  if (!isCronAuthorized(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const { outcomes, remaining, halted } = await checkStaleKeywords({ budgetMs: BUDGET_MS, freshForMs: FRESH_FOR_MS });
