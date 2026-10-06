@@ -25,11 +25,11 @@ with a username, password, and the **invite code** set in the
 not in the repo). If that variable isn't set, only the very first account can
 sign up and signups close after that. Log in at `/login`.
 
-**Upgrading to 3.3:** adds the Scraping Robot provider and a Search Console
-property per domain. Run `npm run db:push`, or paste this into Neon's SQL
-editor **before** deploying (it's additive, so the old version keeps working
-while it's in place; the first line is the 3.2 change, harmless if already
-applied):
+**Upgrading to 3.4:** run `npm run db:push`, or paste this into Neon's SQL
+editor **before** deploying. Every line is safe to re-run; earlier versions'
+columns are included in case they were skipped. If the code goes live first,
+the app shows a "Database needs an update" page listing whatever is still
+missing, instead of crashing.
 
 ```sql
 ALTER TABLE "RankCheck" ADD COLUMN IF NOT EXISTS "error" TEXT;
@@ -37,6 +37,7 @@ ALTER TABLE "Settings" ADD COLUMN IF NOT EXISTS "serpProvider" TEXT NOT NULL DEF
 ALTER TABLE "Settings" ADD COLUMN IF NOT EXISTS "scrapingRobotToken" TEXT;
 ALTER TABLE "Settings" ADD COLUMN IF NOT EXISTS "scrapingRobotRender" BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE "Domain" ADD COLUMN IF NOT EXISTS "gscSiteUrl" TEXT;
+ALTER TABLE "Keyword" ADD COLUMN IF NOT EXISTS "serpSnapshot" JSONB;
 ```
 
 Then set `SIGNUP_INVITE_CODE` in Vercel → Settings → Environment Variables.
@@ -99,6 +100,25 @@ location already tracked) are silently skipped and reported back to you.
 Tags are free-form labels you can filter by using the dropdown above the
 keyword table, and manage (rename/remove across all keywords at once) via
 "Manage tags" next to it.
+
+**Keyword panel:** click a keyword's name to open a side panel with its
+position history (7 / 30 / 90 days, best and change over the range) and the
+Google results captured in its latest successful check — every organic
+result scanned, your domain highlighted, real URLs where known. Results are
+saved from the first check after upgrading to 3.4; only the latest set is
+kept per keyword.
+
+**Refresh selected:** with keywords ticked, the header's "Refresh now"
+becomes "Refresh selected (N)" and checks only those.
+
+**Stopping early:** any refresh (scheduled, "Refresh now", or selected) stops
+after 3 failed checks in a row that look like an outage or a block, and says
+why — rather than grinding through every keyword. Bright Data requests wait
+up to 60s and are retried once on a timeout or server error.
+
+**Clearing errors:** "clear" next to a row's error (or Actions → Clear
+errors) deletes that keyword's failed-check records, so it shows its last
+real result again. Successful history is never touched.
 
 **Selecting keywords:** check the boxes next to any keywords, then use the
 "Actions" menu that appears — works the same whether one or many are

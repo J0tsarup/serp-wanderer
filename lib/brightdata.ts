@@ -32,7 +32,36 @@ export class BrightDataError extends SerpProviderError {
  * Credentials are passed in explicitly (rather than read internally) since
  * they're per-user — the caller resolves whose credentials to use.
  */
-export async function fetchSerp(params: {
+// Bright Data is usually quick but has had slow spells and short outages.
+// One retry on a timeout / cut-off / 5xx turns a brief hiccup into a few
+// seconds' delay instead of a failed check.
+const REQUEST_TIMEOUT_MS = 60_000;
+const MAX_ATTEMPTS = 2;
+
+export async function fetchSerp(params: Parameters<typeof fetchSerpOnce>[0]): Promise<{ items: SerpItem[] }> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      return await fetchSerpOnce(params);
+    } catch (err) {
+      lastErr = err;
+      const transient =
+        (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) ||
+        (err instanceof BrightDataError && err.retryable);
+      if (!transient || attempt === MAX_ATTEMPTS) break;
+      console.warn(`Bright Data attempt ${attempt}/${MAX_ATTEMPTS} failed, retrying:`, err);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+  if (lastErr instanceof Error && (lastErr.name === "TimeoutError" || lastErr.name === "AbortError")) {
+    throw new BrightDataError(
+      `Bright Data didn't answer within ${REQUEST_TIMEOUT_MS / 1000}s (tried ${MAX_ATTEMPTS} times) — it may be having an outage.`
+    );
+  }
+  throw lastErr;
+}
+
+async function fetchSerpOnce(params: {
   apiKey: string | null;
   zone: string | null;
   keyword: string;
@@ -80,15 +109,14 @@ export async function fetchSerp(params: {
     }),
     // Bright Data SERP responses are usually sub-second but can occasionally
     // take longer under load; give it real room before giving up.
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
 
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
-    throw new BrightDataError(
-      `Bright Data request failed (${resp.status}): ${body.slice(0, 300)}`,
-      resp.status
-    );
+    const err = new BrightDataError(`Bright Data request failed (${resp.status}): ${body.slice(0, 300)}`, resp.status);
+    err.retryable = resp.status === 429 || resp.status >= 500;
+    throw err;
   }
 
   let raw: unknown;
@@ -99,9 +127,11 @@ export async function fetchSerp(params: {
     // always means the connection was cut mid-response — usually the
     // platform's own execution timeout killing the request, not Bright
     // Data itself. Surface that plainly instead of the raw parse error.
-    throw new BrightDataError(
-      "Bright Data's response was empty or cut off — this usually means the request timed out. Try a lower check depth in Settings."
+    const err = new BrightDataError(
+      "Bright Data's response was empty or cut off — it was probably too slow to answer. This is usually a Bright Data slowdown or outage."
     );
+    err.retryable = true;
+    throw err;
   }
   // Bright Data has been observed returning either a plain object with an
   // `organic` array, or that same object wrapped in a single-element array

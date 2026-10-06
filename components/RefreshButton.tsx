@@ -3,22 +3,35 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Spinner } from "./Spinner";
+import { useSelection } from "./SelectionContext";
 
-// Refreshes a domain in batches: each request checks what fits in a short
-// window and says how many are left, and this keeps going until none are.
+// With nothing selected: refreshes the whole domain in batches — each
+// request checks what fits in a short window and says how many are left.
+// With keywords selected: becomes "Refresh selected" and checks only those.
 export default function RefreshButton({ domainId }: { domainId: string }) {
+  const { selected, checkSelectedRef } = useSelection();
   const [loading, setLoading] = useState(false);
   const [remaining, setRemaining] = useState<number | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const router = useRouter();
+  const selectedCount = selected.size;
 
-  async function refresh() {
+  async function refreshSelected() {
+    if (!checkSelectedRef.current) return;
+    setLoading(true);
+    setMessage(null);
+    await checkSelectedRef.current();
+    setLoading(false);
+  }
+
+  async function refreshAll() {
     setLoading(true);
     setMessage(null);
     setRemaining(null);
     const since = Date.now();
     let checked = 0;
     let failed = 0;
+    let stop: string | null = null;
 
     for (let round = 0; round < 50; round++) {
       const res = await fetch(`/api/domains/${domainId}/refresh`, {
@@ -29,7 +42,7 @@ export default function RefreshButton({ domainId }: { domainId: string }) {
       const body = await res?.json().catch(() => null);
 
       if (!res?.ok || !body) {
-        setMessage(body?.error ?? "Refresh stopped — the server didn't respond. Try again.");
+        stop = body?.error ?? "Refresh stopped — the server didn't respond. Try again.";
         break;
       }
       checked += body.checked ?? 0;
@@ -37,25 +50,41 @@ export default function RefreshButton({ domainId }: { domainId: string }) {
       setRemaining(body.remaining ?? 0);
       router.refresh(); // show results as each batch lands
 
+      if (body.halted) {
+        stop = body.halted;
+        break;
+      }
       if (!body.remaining || body.checked === 0) break;
     }
 
     setLoading(false);
     setRemaining(null);
-    setMessage((m) => m ?? (failed > 0 ? `Checked ${checked} — ${failed} failed (see rows).` : checked ? `Checked ${checked}.` : null));
+    setMessage(stop ?? (failed > 0 ? `Checked ${checked} — ${failed} failed (see rows).` : checked ? `Checked ${checked}.` : null));
     router.refresh();
   }
 
+  const label = loading
+    ? remaining != null
+      ? `Checking… ${remaining} left`
+      : "Checking…"
+    : selectedCount > 0
+    ? `Refresh selected (${selectedCount})`
+    : "Refresh now";
+
   return (
-    <div className="flex items-center gap-2">
-      {message && !loading && <span className="hidden sm:inline text-xs text-muted">{message}</span>}
+    <div className="flex items-center gap-2 min-w-0">
+      {message && !loading && (
+        <span className="hidden sm:inline text-xs text-muted truncate max-w-[280px]" title={message}>
+          {message}
+        </span>
+      )}
       <button
-        onClick={refresh}
+        onClick={selectedCount > 0 ? refreshSelected : refreshAll}
         disabled={loading}
-        className="flex items-center gap-1.5 rounded-md border border-line bg-surface text-sm px-3 py-1.5 text-ink hover:border-accent hover:text-accent transition-colors motion-reduce:transition-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        className="flex items-center gap-1.5 rounded-md border border-line bg-surface text-sm px-3 py-1.5 text-ink hover:border-accent hover:text-accent transition-colors motion-reduce:transition-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 whitespace-nowrap"
       >
         {loading && <Spinner />}
-        {loading ? (remaining != null ? `Checking… ${remaining} left` : "Checking…") : "Refresh now"}
+        {label}
       </button>
     </div>
   );

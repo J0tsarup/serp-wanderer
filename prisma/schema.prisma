@@ -54,6 +54,7 @@ model Keyword {
   device     String      @default("desktop") // "desktop" | "mobile"
   location   String?     // optional city-level targeting — Google Ads canonical geo-target name, e.g. "Los Angeles,California,United States"
   tags       String[]    @default([]) // free-form labels for filtering/grouping
+  serpSnapshot Json?     // Google results seen in the latest successful check (lib/serp/snapshot.ts) — shown in the keyword panel
   createdAt  DateTime    @default(now())
   checks     RankCheck[]
 

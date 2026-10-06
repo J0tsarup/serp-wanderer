@@ -4,6 +4,7 @@ import "./globals.css";
 import { APP_VERSION, LAST_UPDATED } from "@/lib/version";
 import { getSessionUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { pendingSchemaSql } from "@/lib/schema-check";
 import LogoutButton from "@/components/LogoutButton";
 import Sidebar from "@/components/Sidebar";
 import MobileDomainSwitcher from "@/components/MobileDomainSwitcher";
@@ -33,6 +34,29 @@ const lastUpdatedFormatted = new Date(LAST_UPDATED).toLocaleDateString(undefined
 });
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // Code deployed before the database update → show what to run instead of
+  // a bare "Application error".
+  const pendingSql = await pendingSchemaSql();
+  if (pendingSql.length > 0) {
+    return (
+      <html lang="en" className={`${publicSans.variable} ${plexMono.variable}`}>
+        <body className="min-h-screen bg-paper font-sans text-ink antialiased">
+          <main className="mx-auto max-w-2xl px-6 py-12 space-y-4">
+            <h1 className="text-xl font-semibold">Database needs an update</h1>
+            <p className="text-sm text-muted">
+              This version of SERP Wanderer ({APP_VERSION}) uses database columns that don&apos;t exist yet. Run
+              this in Neon&apos;s SQL editor (or <code className="font-mono">npm run db:push</code>), then reload —
+              no redeploy needed.
+            </p>
+            <pre className="rounded-md border border-line bg-surface p-4 text-xs font-mono whitespace-pre-wrap">
+              {pendingSql.join("\n")}
+            </pre>
+          </main>
+        </body>
+      </html>
+    );
+  }
+
   const user = await getSessionUser();
 
   // Fetched once here (not per-page) so the sidebar/switcher persists across

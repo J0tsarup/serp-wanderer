@@ -7,6 +7,7 @@ import DomainGscProperty from "@/components/DomainGscProperty";
 import AddKeywordTrigger from "@/components/AddKeywordTrigger";
 import KeywordTable from "@/components/KeywordTable";
 import RefreshButton from "@/components/RefreshButton";
+import { SelectionProvider } from "@/components/SelectionContext";
 import DiscoverKeywords from "@/components/DiscoverKeywords";
 
 export const dynamic = "force-dynamic";
@@ -21,7 +22,16 @@ export default async function DomainPage({ params }: { params: { id: string } })
       include: {
         keywords: {
           orderBy: { createdAt: "asc" },
-          include: {
+          select: {
+            id: true,
+            term: true,
+            country: true,
+            language: true,
+            device: true,
+            location: true,
+            tags: true,
+            createdAt: true,
+            // serpSnapshot deliberately left out — it's loaded per keyword by the side panel.
             checks: {
               orderBy: { checkedAt: "desc" },
               take: 30,
@@ -63,6 +73,7 @@ export default async function DomainPage({ params }: { params: { id: string } })
   const gscMetrics = gscMetricsMap ? Object.fromEntries(gscMetricsMap) : null;
 
   return (
+    <SelectionProvider>
     <div className="space-y-8">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
@@ -104,7 +115,8 @@ export default async function DomainPage({ params }: { params: { id: string } })
             defaultLocation={settings.defaultLocation ?? ""}
           />
         </section>
-      )}
+            )}
     </div>
+    </SelectionProvider>
   );
 }

@@ -38,8 +38,9 @@ export async function GET(req: NextRequest) {
   if (!isAuthorized(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  const { outcomes, remaining } = await checkStaleKeywords({ budgetMs: BUDGET_MS, freshForMs: FRESH_FOR_MS });
+  const { outcomes, remaining, halted } = await checkStaleKeywords({ budgetMs: BUDGET_MS, freshForMs: FRESH_FOR_MS });
   return NextResponse.json({
+    halted,
     checked: outcomes.length,
     failed: outcomes.filter((o) => o.error).length,
     remaining,

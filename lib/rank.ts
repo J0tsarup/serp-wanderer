@@ -1,9 +1,18 @@
 import { prisma } from "./db";
 import { getSettings } from "./settings";
 import { fetchSerpPage, providerLabel } from "./serp";
-import { findRanking } from "./serp/match";
-import { decodeLink, isResolvableRedirect, resolveGoogleRedirect, urlFromDisplay, SerpItem } from "./serp/resolve";
+import { rankItems } from "./serp/match";
+import {
+  decodeLink,
+  hostMatches,
+  isResolvableRedirect,
+  itemHost,
+  resolveGoogleRedirect,
+  urlFromDisplay,
+  SerpItem,
+} from "./serp/resolve";
 import { SerpProviderError } from "./serp/errors";
+import type { SerpSnapshot, SerpSnapshotItem } from "./serp/snapshot";
 
 export type CheckOutcome = {
   keywordId: string;
@@ -11,7 +20,14 @@ export type CheckOutcome = {
   position: number | null;
   url: string | null;
   error?: string;
+  // The failure is likely to hit every keyword right now (outage, block, bad
+  // credentials) — batches stop after a few of these in a row.
+  systemic?: boolean;
 };
+
+// Stop a batch after this many systemic failures in a row: when the provider
+// is down or Google is blocking, carrying on just burns time (and maybe credits).
+export const HALT_AFTER_CONSECUTIVE_FAILURES = 3;
 
 // Small pause between page requests for the same keyword — gentle on rate
 // limits, and pointless to remove since each request already takes ~1s+.
@@ -73,6 +89,8 @@ export async function checkKeyword(keywordId: string): Promise<CheckOutcome> {
     // exactly 10 organic results, so positions on page 2+ are counted from
     // what was actually returned rather than assumed as page * 10.
     let seenBefore = 0;
+    // Every organic result looked at, for the keyword's results panel.
+    const scanned: SerpSnapshotItem[] = [];
 
     for (let page = 0; page < maxPages; page++) {
       let items;
@@ -91,15 +109,36 @@ export async function checkKeyword(keywordId: string): Promise<CheckOutcome> {
         if (page > 0 && err instanceof SerpProviderError) {
           throw new SerpProviderError(
             `Not in the top ${seenBefore} results; page ${page + 1} then failed — ${err.message}`,
-            err.status
+            err.status,
+            { systemic: err.systemic }
           );
         }
         throw err;
       }
 
-      const match = findRanking(items, keyword.domain.name, seenBefore);
+      const ranked = rankItems(items, seenBefore);
+      for (const { item, position } of ranked) {
+        const host = itemHost(item);
+        const url = decodeLink(item.link);
+        scanned.push({
+          position,
+          title: item.title ?? "",
+          host,
+          url,
+          link: url ?? item.link,
+          display: item.displayUrl ?? null,
+          isTarget: hostMatches(host, keyword.domain.name),
+        });
+      }
+
+      const match = ranked.find((r) => hostMatches(itemHost(r.item), keyword.domain.name));
       if (match) {
         result = { position: match.position, url: await resolveMatchedUrl(match.item) };
+        const entry = scanned.find((s) => s.isTarget && s.position === match.position);
+        if (entry && result.url) {
+          entry.url = result.url;
+          entry.link = result.url;
+        }
         break; // found it — no need to check further pages
       }
 
@@ -121,13 +160,28 @@ export async function checkKeyword(keywordId: string): Promise<CheckOutcome> {
       }
     }
 
-    await prisma.rankCheck.create({
-      data: {
-        keywordId: keyword.id,
-        position: result?.position ?? null,
-        url: result?.url ?? null,
-      },
-    });
+    const snapshot: SerpSnapshot = {
+      checkedAt: new Date().toISOString(),
+      provider: providerName,
+      items: scanned,
+      scanned: scanned.length,
+      depth: settings.maxCheckDepth,
+      found: !!result,
+    };
+
+    await prisma.$transaction([
+      prisma.rankCheck.create({
+        data: {
+          keywordId: keyword.id,
+          position: result?.position ?? null,
+          url: result?.url ?? null,
+        },
+      }),
+      prisma.keyword.update({
+        where: { id: keyword.id },
+        data: { serpSnapshot: snapshot as unknown as object },
+      }),
+    ]);
 
     return {
       keywordId: keyword.id,
@@ -141,12 +195,13 @@ export async function checkKeyword(keywordId: string): Promise<CheckOutcome> {
     console.error(`checkKeyword failed for "${keyword.term}" (${keyword.id}):`, err);
 
     let message = "Unknown error";
+    const systemic = err instanceof SerpProviderError ? err.systemic : true;
     if (err instanceof SerpProviderError) {
       message = err.message;
     } else if (err instanceof Error) {
       message =
         err.name === "AbortError" || err.name === "TimeoutError"
-          ? `Timed out waiting on ${providerName} — try a lower check depth in Settings if this keeps happening.`
+          ? `Timed out waiting on ${providerName} — it may be slow or having an outage.`
           : err.message;
     }
 
@@ -156,7 +211,7 @@ export async function checkKeyword(keywordId: string): Promise<CheckOutcome> {
       .create({ data: { keywordId: keyword.id, position: null, url: null, error: message.slice(0, 500) } })
       .catch((dbErr: unknown) => console.error(`Failed to record failed-check attempt for ${keyword.id}:`, dbErr));
 
-    return { keywordId: keyword.id, term: keyword.term, position: null, url: null, error: message };
+    return { keywordId: keyword.id, term: keyword.term, position: null, url: null, error: message, systemic };
   }
 }
 
@@ -173,7 +228,7 @@ export async function checkStaleKeywords(opts: {
   freshForMs: number;
   userId?: string;
   domainId?: string;
-}): Promise<{ outcomes: CheckOutcome[]; remaining: number }> {
+}): Promise<{ outcomes: CheckOutcome[]; remaining: number; halted: string | null }> {
   const started = Date.now();
   const keywords = await prisma.keyword.findMany({
     where: {
@@ -194,6 +249,8 @@ export async function checkStaleKeywords(opts: {
   // Rough per-check cost so we don't start one we can't finish. Grows with
   // what we observe, so deep checks naturally leave more headroom.
   let slowest = 15_000;
+  let failStreak = 0;
+  let halted: string | null = null;
 
   for (const { id } of due) {
     if (Date.now() - started + slowest > opts.budgetMs) break;
@@ -208,12 +265,18 @@ export async function checkStaleKeywords(opts: {
       continue;
     }
     const t0 = Date.now();
-    outcomes.push(await checkKeyword(id));
+    const outcome = await checkKeyword(id);
+    outcomes.push(outcome);
     slowest = Math.max(slowest, Date.now() - t0);
+    failStreak = outcome.error && outcome.systemic ? failStreak + 1 : 0;
+    if (failStreak >= HALT_AFTER_CONSECUTIVE_FAILURES) {
+      halted = `Stopped after ${failStreak} failed checks in a row — last error: ${outcome.error}`;
+      break;
+    }
     await new Promise((r) => setTimeout(r, 250));
   }
 
   // Remaining = still due and not checked by this run.
   const done = new Set([...outcomes.map((o) => o.keywordId), ...skipped]);
-  return { outcomes, remaining: due.filter((k) => !done.has(k.id)).length };
+  return { outcomes, remaining: due.filter((k) => !done.has(k.id)).length, halted };
 }

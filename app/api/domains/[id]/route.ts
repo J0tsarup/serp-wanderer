@@ -18,12 +18,21 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
     include: {
       keywords: {
         orderBy: { createdAt: "asc" },
-        include: {
-          checks: {
-            orderBy: { checkedAt: "desc" },
-            take: 30,
+        select: {
+            id: true,
+            term: true,
+            country: true,
+            language: true,
+            device: true,
+            location: true,
+            tags: true,
+            createdAt: true,
+            // serpSnapshot deliberately left out — it's loaded per keyword by the side panel.
+            checks: {
+              orderBy: { checkedAt: "desc" },
+              take: 30,
+            },
           },
-        },
       },
     },
   });

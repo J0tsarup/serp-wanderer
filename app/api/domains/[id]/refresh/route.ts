@@ -27,7 +27,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const since = Number(body?.since) || Date.now();
   const freshForMs = Math.max(0, Date.now() - since);
 
-  const { outcomes, remaining } = await checkStaleKeywords({
+  const { outcomes, remaining, halted } = await checkStaleKeywords({
     budgetMs: BATCH_BUDGET_MS,
     freshForMs,
     userId: user.id,
@@ -35,6 +35,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   });
 
   return NextResponse.json({
+    halted,
     checked: outcomes.length,
     failed: outcomes.filter((o) => o.error).length,
     remaining,

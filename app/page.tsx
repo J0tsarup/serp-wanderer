@@ -16,7 +16,8 @@ export default async function HomePage() {
       where: { userId: user.id },
       include: {
         keywords: {
-          include: {
+          select: {
+            term: true,
             // Extra rows so failed checks can be skipped (see filter below).
             checks: { orderBy: { checkedAt: "desc" }, take: 6, select: { position: true, error: true } },
           },

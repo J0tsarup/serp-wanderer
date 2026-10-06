@@ -49,7 +49,9 @@ export async function fetchSerpScrapingRobot(params: {
     // Scraping Robot's documented API has no way to request Google's mobile
     // results, so a "mobile" check would silently be a desktop one.
     throw new SerpProviderError(
-      "Mobile checks aren't supported with Scraping Robot — switch this keyword to desktop, or use Bright Data for mobile."
+      "Mobile checks aren't supported with Scraping Robot — switch this keyword to desktop, or use Bright Data for mobile.",
+      undefined,
+      { systemic: false }
     );
   }
 

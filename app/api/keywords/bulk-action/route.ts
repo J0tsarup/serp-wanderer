@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { checkKeyword } from "@/lib/rank";
+import { checkKeyword, HALT_AFTER_CONSECUTIVE_FAILURES } from "@/lib/rank";
 import { getSessionUser } from "@/lib/auth";
 
 // Never statically prerendered — this route always reads/writes live
@@ -15,6 +15,7 @@ export const maxDuration = 300;
 
 type Action =
   | "check"
+  | "clear-errors"
   | "remove"
   | "duplicate"
   | "duplicate-flip-device"
@@ -53,11 +54,26 @@ export async function POST(req: NextRequest) {
 
     case "check": {
       const outcomes = [];
+      let failStreak = 0;
+      let halted: string | null = null;
       for (const id of ids) {
-        outcomes.push(await checkKeyword(id));
+        const outcome = await checkKeyword(id);
+        outcomes.push(outcome);
+        failStreak = outcome.error && outcome.systemic ? failStreak + 1 : 0;
+        if (failStreak >= HALT_AFTER_CONSECUTIVE_FAILURES) {
+          halted = `Stopped after ${failStreak} failed checks in a row — last error: ${outcome.error}`;
+          break;
+        }
         await new Promise((r) => setTimeout(r, 250));
       }
-      return NextResponse.json({ checked: outcomes.length, outcomes });
+      return NextResponse.json({ checked: outcomes.length, outcomes, halted });
+    }
+
+    case "clear-errors": {
+      // Deletes failed-check records only, so each row falls back to its last
+      // real result. Successful history is untouched.
+      const result = await prisma.rankCheck.deleteMany({ where: { keywordId: { in: ids }, error: { not: null } } });
+      return NextResponse.json({ cleared: result.count });
     }
 
     case "duplicate":

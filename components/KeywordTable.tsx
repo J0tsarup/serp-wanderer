@@ -1,13 +1,15 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import PositionChart, { CheckPoint } from "./PositionChart";
+import type { CheckPoint } from "./PositionChart";
 import { Sparkline } from "./Sparkline";
 import { Spinner } from "./Spinner";
 import TagManager from "./TagManager";
 import RelativeTime from "./RelativeTime";
 import MoveDomainModal from "./MoveDomainModal";
+import KeywordDrawer from "./KeywordDrawer";
+import { useSelection } from "./SelectionContext";
 
 export type KeywordRow = {
   id: string;
@@ -222,13 +224,15 @@ export default function KeywordTable({
   domainId: string;
   gscMetrics?: Record<string, GscMetric> | null;
 }) {
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [drawerId, setDrawerId] = useState<string | null>(null);
+  const [bulkNotice, setBulkNotice] = useState<string | null>(null);
   const [removingId, setRemovingId] = useState<string | null>(null);
   const [checkingIds, setCheckingIds] = useState<Set<string>>(new Set());
   const [justUpdatedIds, setJustUpdatedIds] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Selection lives in context so the page's Refresh button can act on it.
+  const { selected, setSelected, checkSelectedRef } = useSelection();
   const [lastClickedIndex, setLastClickedIndex] = useState<number | null>(null);
   const [tagFilter, setTagFilter] = useState<string>("all");
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
@@ -238,6 +242,15 @@ export default function KeywordTable({
   const [sortColumn, setSortColumn] = useState<SortColumn>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>(null);
   const router = useRouter();
+
+  // Let the header's "Refresh selected" button run the same check as
+  // Actions → Check (so rows get spinners, errors and the stop-early rule).
+  useEffect(() => {
+    checkSelectedRef.current = () => bulkAction("check");
+    return () => {
+      checkSelectedRef.current = null;
+    };
+  });
 
   const allTags = useMemo(() => {
     const set = new Set<string>();
@@ -358,8 +371,26 @@ export default function KeywordTable({
     router.refresh();
   }
 
+  async function clearErrorsFor(id: string) {
+    setErrors((prev) => ({ ...prev, [id]: "" }));
+    await fetch("/api/keywords/bulk-action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: [id], action: "clear-errors" }),
+    }).catch(() => null);
+    router.refresh();
+  }
+
   async function bulkAction(
-    action: "check" | "remove" | "duplicate" | "duplicate-flip-device" | "add-tags" | "remove-tags" | "set-device",
+    action:
+      | "check"
+      | "clear-errors"
+      | "remove"
+      | "duplicate"
+      | "duplicate-flip-device"
+      | "add-tags"
+      | "remove-tags"
+      | "set-device",
     extra?: Record<string, unknown>
   ) {
     const ids = Array.from(selected);
@@ -378,12 +409,17 @@ export default function KeywordTable({
 
     setBulkBusy(true);
     setActionsMenuOpen(false);
+    setBulkNotice(null);
 
     if (action === "check") {
       // Checked in small batches so a big selection never runs as one long
       // request (and rows update as each batch finishes).
       const CHUNK = 5;
-      for (let i = 0; i < ids.length; i += CHUNK) {
+      let failStreak = 0;
+      let checked = 0;
+      let failed = 0;
+      let haltedMsg: string | null = null;
+      for (let i = 0; i < ids.length && !haltedMsg; i += CHUNK) {
         const chunk = ids.slice(i, i + CHUNK);
         const res = await fetch("/api/keywords/bulk-action", {
           method: "POST",
@@ -391,7 +427,18 @@ export default function KeywordTable({
           body: JSON.stringify({ ids: chunk, action }),
         }).catch(() => null);
         const body = await res?.json().catch(() => null);
-        const outcomes = (body?.outcomes as { keywordId: string; error?: string }[] | undefined) ?? [];
+        const outcomes =
+          (body?.outcomes as { keywordId: string; error?: string; systemic?: boolean }[] | undefined) ?? [];
+        if (!res?.ok) haltedMsg = body?.error ?? "Check stopped — the server didn't respond.";
+        // Stop early when the provider is down or Google is blocking: the
+        // same rule the server applies, carried across batches.
+        for (const o of outcomes) {
+          checked++;
+          if (o.error) failed++;
+          failStreak = o.error && o.systemic ? failStreak + 1 : 0;
+          if (failStreak >= 3 && !haltedMsg) haltedMsg = `Stopped after 3 failed checks in a row — last error: ${o.error}`;
+        }
+        if (body?.halted && !haltedMsg) haltedMsg = body.halted;
         setErrors((prev) => {
           const next = { ...prev };
           outcomes.forEach((o) => (next[o.keywordId] = o.error ?? ""));
@@ -407,6 +454,24 @@ export default function KeywordTable({
         });
         router.refresh();
       }
+      if (haltedMsg) {
+        // Unchecked rows lose their spinners; nothing was charged for them.
+        setCheckingIds(new Set());
+        setBulkNotice(`${haltedMsg} — ${ids.length - checked} not checked.`);
+      } else if (failed > 0) {
+        setBulkNotice(`Checked ${checked} — ${failed} failed.`);
+      }
+    } else if (action === "clear-errors") {
+      await fetch("/api/keywords/bulk-action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids, action }),
+      }).catch(() => null);
+      setErrors((prev) => {
+        const next = { ...prev };
+        ids.forEach((id) => (next[id] = ""));
+        return next;
+      });
     } else {
       await fetch("/api/keywords/bulk-action", {
         method: "POST",
@@ -466,6 +531,14 @@ export default function KeywordTable({
 
   return (
     <div className="md:min-w-[720px]">
+      {bulkNotice && (
+        <div className="mb-2 flex items-start justify-between gap-3 rounded-md border border-line bg-surface px-4 py-2 text-xs text-ink">
+          <span>{bulkNotice}</span>
+          <button onClick={() => setBulkNotice(null)} className="text-muted hover:text-ink shrink-0" aria-label="Dismiss">
+            ✕
+          </button>
+        </div>
+      )}
       <div className="flex items-center justify-between gap-3 rounded-md border border-line bg-surface px-4 py-3 mb-1">
         <div className="flex items-center gap-4">
           {allTags.length > 0 ? (
@@ -513,6 +586,13 @@ export default function KeywordTable({
                         className="block w-full text-left px-3 py-1.5 text-xs text-ink hover:bg-paper"
                       >
                         Check
+                      </button>
+                      <button
+                        onClick={() => bulkAction("clear-errors")}
+                        className="block w-full text-left px-3 py-1.5 text-xs text-ink hover:bg-paper"
+                        title="Delete failed-check records so rows show their last real result"
+                      >
+                        Clear errors
                       </button>
                       <button
                         onClick={() => bulkAction("duplicate")}
@@ -652,7 +732,6 @@ export default function KeywordTable({
           const good = completedChecks(kw.checks);
           const [lastGood, prevGood] = good;
           const latestFailed = latest?.error ?? null;
-          const isOpen = expanded === kw.id;
           const isChecking = checkingIds.has(kw.id);
           const isRemoving = removingId === kw.id;
           const justUpdated = justUpdatedIds.has(kw.id);
@@ -663,7 +742,8 @@ export default function KeywordTable({
 
           const nameBlock = (
             <button
-              onClick={() => setExpanded(isOpen ? null : kw.id)}
+              onClick={() => setDrawerId(kw.id)}
+              title="Show Google results and position history"
               className="text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded-sm"
             >
               <div className="flex items-center gap-1.5">
@@ -804,19 +884,26 @@ export default function KeywordTable({
 
               {error && (
                 <div className="pb-3 -mt-1">
-                  <p className="text-xs text-fall">Check failed: {error}</p>
+                  <p className="text-xs text-fall">
+                    Check failed: {error}{" "}
+                    <button
+                      onClick={() => clearErrorsFor(kw.id)}
+                      className="text-muted hover:text-ink underline underline-offset-2"
+                      title="Delete this keyword's failed-check records"
+                    >
+                      clear
+                    </button>
+                  </p>
                 </div>
               )}
 
-              {isOpen && (
-                <div className="pb-4 pl-0">
-                  <PositionChart checks={good} maxCheckDepth={maxCheckDepth} />
-                </div>
-              )}
             </div>
           );
         })}
       </div>
+      {drawerId && (
+        <KeywordDrawer keywordId={drawerId} maxCheckDepth={maxCheckDepth} onClose={() => setDrawerId(null)} />
+      )}
     </div>
   );
 }
