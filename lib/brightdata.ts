@@ -22,10 +22,30 @@ type OrganicResult = {
 
 /** Kept as a named subclass so existing `instanceof` checks still read clearly. */
 export class BrightDataError extends SerpProviderError {
+  // The JSON parsing didn't come through (empty or non-JSON body): the next
+  // attempt should ask for the raw Google page and read it ourselves.
+  tryHtml = false;
   constructor(message: string, status?: number) {
     super(message, status);
     this.name = "BrightDataError";
   }
+}
+
+type Format = "json" | "html";
+
+/** Bright Data's diagnostic response headers (x-brd-error, x-brd-error-code, …), for logs and messages. */
+function brdHeaders(resp: Response): Record<string, string> {
+  const out: Record<string, string> = {};
+  resp.headers.forEach((value, key) => {
+    if (key.startsWith("x-brd-") || key.startsWith("x-luminati-")) out[key] = value;
+  });
+  return out;
+}
+
+function brdReason(h: Record<string, string>): string {
+  const msg = h["x-brd-error"] || h["x-brd-err-msg"] || h["x-luminati-error"];
+  const code = h["x-brd-error-code"] || h["x-brd-err-code"] || h["x-luminati-error-code"];
+  return [code, msg].filter(Boolean).join(": ");
 }
 
 /**
@@ -41,16 +61,22 @@ const MAX_ATTEMPTS = 2;
 
 export async function fetchSerp(params: Parameters<typeof fetchSerpOnce>[0]): Promise<{ items: SerpItem[] }> {
   let lastErr: unknown;
+  let format: Format = "json";
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      return await fetchSerpOnce(params);
+      return await fetchSerpOnce(params, format);
     } catch (err) {
       lastErr = err;
       const transient =
         (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) ||
         (err instanceof BrightDataError && err.retryable);
       if (!transient || attempt === MAX_ATTEMPTS) break;
-      console.warn(`Bright Data attempt ${attempt}/${MAX_ATTEMPTS} failed, retrying:`, err);
+      // Empty / unusable JSON answer → ask for the plain Google page next time
+      // and read the results ourselves (same parser as Scraping Robot).
+      if (err instanceof BrightDataError && err.tryHtml) format = "html";
+      console.warn(
+        `Bright Data attempt ${attempt}/${MAX_ATTEMPTS} failed (${err instanceof Error ? err.message : err}); retrying as ${format}`
+      );
       await new Promise((r) => setTimeout(r, 2000));
     }
   }
@@ -62,7 +88,8 @@ export async function fetchSerp(params: Parameters<typeof fetchSerpOnce>[0]): Pr
   throw lastErr;
 }
 
-async function fetchSerpOnce(params: {
+async function fetchSerpOnce(
+  params: {
   apiKey: string | null;
   zone: string | null;
   keyword: string;
@@ -71,7 +98,9 @@ async function fetchSerpOnce(params: {
   device?: "desktop" | "mobile";
   location?: string | null; // optional city-level targeting (Google Ads canonical geo-target name), sent as Google's `uule` param
   page?: number; // 0-indexed page of results; page 1 = results 10-19, etc.
-}): Promise<{ items: SerpItem[] }> {
+  },
+  format: Format = "json"
+): Promise<{ items: SerpItem[] }> {
   const { apiKey, zone } = params;
   if (!apiKey || !zone) {
     throw new BrightDataError(
@@ -102,20 +131,26 @@ async function fetchSerpOnce(params: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({
-      zone,
-      url: googleUrl,
-      format: "raw",
-      data_format: "parsed_light",
-    }),
+    body: JSON.stringify(
+      format === "json"
+        ? { zone, url: googleUrl, format: "raw", data_format: "parsed_light" }
+        : { zone, url: googleUrl, format: "raw" } // plain Google HTML
+    ),
     // Bright Data SERP responses are usually sub-second but can occasionally
     // take longer under load; give it real room before giving up.
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
 
+  const diag = brdHeaders(resp);
+  const reason = brdReason(diag);
+
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
-    const err = new BrightDataError(`Bright Data request failed (${resp.status}): ${body.slice(0, 300)}`, resp.status);
+    console.warn(`Bright Data ${resp.status} for page ${(params.page ?? 0) + 1} of "${params.keyword}"`, diag);
+    const err = new BrightDataError(
+      `Bright Data request failed (${resp.status})${reason ? ` — ${reason}` : ""}: ${body.slice(0, 200)}`,
+      resp.status
+    );
     err.retryable = resp.status === 429 || resp.status >= 500;
     throw err;
   }
@@ -127,10 +162,20 @@ async function fetchSerpOnce(params: {
   const where = `page ${(params.page ?? 0) + 1} of "${params.keyword}"`;
 
   if (!text.trim()) {
-    console.warn(`Bright Data returned an empty body for ${where} (status ${resp.status})`);
-    const err = new BrightDataError("Bright Data returned an empty response for this page.");
+    console.warn(`Bright Data returned an empty body for ${where} (status ${resp.status}, ${format})`, diag);
+    const err = new BrightDataError(
+      `Bright Data returned an empty response for this page${reason ? ` (${reason})` : ""}.`
+    );
     err.retryable = true;
+    err.tryHtml = format === "json";
     throw err;
+  }
+
+  if (format === "html") {
+    const items = parseGoogleHtml(text);
+    if (items.length > 0) return { items };
+    console.warn(`Bright Data HTML for ${where} had no readable results:`, text.replace(/\s+/g, " ").slice(0, 400));
+    throw new BrightDataError("Bright Data returned a Google page with no readable results (details in the server logs).");
   }
 
   let raw: unknown;
@@ -151,9 +196,10 @@ async function fetchSerpOnce(params: {
       console.warn(`Bright Data sent a non-JSON body for ${where}:`, text.replace(/\s+/g, " ").slice(0, 400));
     }
     const err = new BrightDataError(
-      "Bright Data's answer for this page wasn't usable results (details in the server logs) — usually a Bright Data-side problem with deeper result pages."
+      "Bright Data's answer for this page wasn't usable results (details in the server logs)."
     );
     err.retryable = true;
+    err.tryHtml = true;
     throw err;
   }
   // Bright Data has been observed returning either a plain object with an
